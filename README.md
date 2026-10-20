@@ -10,7 +10,6 @@ Arduino Uno sketches for ELT 295 lab work.
 | `Buzzer_HW508/` | Tests the HW-508 passive buzzer (S → D9, - → GND, middle pin unconnected) |
 | `TempAlarm/` | DS18B20 + buzzer: beeps at 77 °F, solid at 78 °F, 1 °F hysteresis (edit the constants at the top to change) |
 | `DS18B20_Diagnostic/` | Troubleshooting: reports line idle level, presence pulse and ROM code |
-| `TempSensor/` | Analog TMP36 on A0 (for analog-sensor labs) |
 
 ## HW-506 (DS18B20) setup
 
@@ -63,6 +62,6 @@ Clap next to the microphone: the dashboard's Sound meter and the bridge's min/ma
 
 1. **Teacher:** double-click `Start_Dashboard.bat` (needs Python and `pip install -r server/requirements.txt` once). The dashboard opens in your browser, and the window prints the student download link. Allow Python through the firewall on Private networks.
 2. **Student:** upload `TempAlarm_Net`, close the Serial Monitor, download `http://<teacher-ip>:5000/bridge.html` (also linked at the top of the dashboard), and double-click the saved file in Chrome or Edge. It already has the teacher's address and connects to the Uno by itself. The first time only, click **Connect** and pick the COM port; after that it reconnects automatically, including when the cable is replugged.
-3. Each board appears as a card with a thermometer, gauge, speaker icon (silent / beeping / solid) and bring-up panels; SHT40 boards also get an XYZ acceleration graph. Boards silent for 3 minutes are removed (`--expire-min` changes this). The SHT40 firmware in `arduino_firmware/` uses the same pipeline.
+3. Each board appears as a card with a thermometer, gauge, speaker icon (silent / beeping / solid) and bring-up panels; boards that report accelerometer data also get a live XYZ graph. Boards silent for 3 minutes are removed (`--expire-min` changes this).
 
-Note: `server/`, `bridge/` and `arduino_firmware/` are in `.gitignore`.
+Note: `server/` and `bridge/` are in `.gitignore`.
