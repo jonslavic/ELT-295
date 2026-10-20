@@ -48,18 +48,18 @@ Expected output: `Temp: 22.50 C / 72.50 F` once per second. Pinching the sensor 
 
 ## Classroom dashboard (teacher view)
 
-`TempAlarm_Net/` is `TempAlarm` plus a DS18B20 1-Wire bring-up, an HW-503 light sensor and one JSON line per second at 115200 baud (name, temperature, alarm state, raw scratchpad, bus log, light). Each student's browser forwards it to the teacher's computer.
+`TempAlarm_Net/` is `TempAlarm` plus a DS18B20 1-Wire bring-up, an HW-496 microphone module and one JSON line per second at 115200 baud (name, temperature, alarm state, raw scratchpad, bus log, sound level). Each student's browser forwards it to the teacher's computer.
 
-HW-503 light sensor (4-pin LDR module) wiring, in addition to the DS18B20 (D2) and buzzer (D9):
+HW-496 microphone module (4-pin: VCC, GND, AO, DO) wiring, in addition to the DS18B20 (D2) and buzzer (D9):
 
-| HW-503 pin | Uno pin |
+| HW-496 pin | Uno pin |
 |---|---|
 | VCC | 5V |
 | GND | GND |
 | AO | A0 |
 | DO | D3 |
 
-Do the cover test (hand over the sensor) to see which way your module reads; if the raw value goes *up* when covered, set `LIGHT_INVERT = true` in the sketch.
+Clap next to the microphone: the dashboard's Sound meter and the bridge's min/max swing should jump. The blue pot sets where DO trips; it does not change AO.
 
 1. **Teacher:** double-click `Start_Dashboard.bat` (needs Python and `pip install -r server/requirements.txt` once). The dashboard opens in your browser, and the window prints the student download link. Allow Python through the firewall on Private networks.
 2. **Student:** upload `TempAlarm_Net`, close the Serial Monitor, download `http://<teacher-ip>:5000/bridge.html` (also linked at the top of the dashboard), and double-click the saved file in Chrome or Edge. It already has the teacher's address and connects to the Uno by itself. The first time only, click **Connect** and pick the COM port; after that it reconnects automatically, including when the cable is replugged.
