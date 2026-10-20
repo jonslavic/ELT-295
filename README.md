@@ -45,3 +45,13 @@ Expected output: `Temp: 22.50 C / 72.50 F` once per second. Pinching the sensor 
 - Diagnostic shows `Presence pulse: YES` and family code `0x28`: the sensor is good.
 - Garbled Serial Monitor text: set baud to 9600.
 - `OneWire.h` or `DallasTemperature.h` not found: install the libraries above.
+
+## Classroom dashboard (teacher view)
+
+`TempAlarm_Net/` is `TempAlarm` plus one JSON line per second at 115200 baud (name, temperature, alarm state). Each student's browser forwards it to the teacher's computer.
+
+1. **Teacher:** `py -3 server/server.py` (needs `pip install -r server/requirements.txt`), then find the LAN IP with `ipconfig` and open `http://<ip>:5000`. Allow Python through the firewall on Private networks.
+2. **Student:** upload `TempAlarm_Net`, close the Serial Monitor, open `bridge/bridge.html` in Chrome or Edge, enter the teacher's URL, click **Connect**, and set a name.
+3. Each board appears as a card (online/offline, °F/°C, alarm OFF/BEEP/SOLID). The SHT40 firmware in `arduino_firmware/` uses the same pipeline.
+
+Note: `server/`, `bridge/` and `arduino_firmware/` are in `.gitignore`.
