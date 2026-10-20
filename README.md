@@ -48,10 +48,10 @@ Expected output: `Temp: 22.50 C / 72.50 F` once per second. Pinching the sensor 
 
 ## Classroom dashboard (teacher view)
 
-`TempAlarm_Net/` is `TempAlarm` plus one JSON line per second at 115200 baud (name, temperature, alarm state). Each student's browser forwards it to the teacher's computer.
+`TempAlarm_Net/` is `TempAlarm` plus a DS18B20 1-Wire bring-up and one JSON line per second at 115200 baud (name, temperature, alarm state, raw scratchpad, bus log). Each student's browser forwards it to the teacher's computer.
 
-1. **Teacher:** `py -3 server/server.py` (needs `pip install -r server/requirements.txt`), then find the LAN IP with `ipconfig` and open `http://<ip>:5000`. Allow Python through the firewall on Private networks.
-2. **Student:** upload `TempAlarm_Net`, close the Serial Monitor, open `bridge/bridge.html` in Chrome or Edge, enter the teacher's URL, click **Connect**, and set a name.
-3. Each board appears as a card (online/offline, °F/°C, alarm OFF/BEEP/SOLID). The SHT40 firmware in `arduino_firmware/` uses the same pipeline.
+1. **Teacher:** double-click `Start_Dashboard.bat` (needs Python and `pip install -r server/requirements.txt` once). The dashboard opens in your browser, and the window prints the student download link. Allow Python through the firewall on Private networks.
+2. **Student:** upload `TempAlarm_Net`, close the Serial Monitor, download `http://<teacher-ip>:5000/bridge.html` (also linked at the top of the dashboard), and double-click the saved file in Chrome or Edge. It already has the teacher's address and connects to the Uno by itself. The first time only, click **Connect** and pick the COM port; after that it reconnects automatically, including when the cable is replugged.
+3. Each board appears as a card with a thermometer, gauge, speaker icon (silent / beeping / solid) and bring-up panels; SHT40 boards also get an XYZ acceleration graph. Boards silent for 3 minutes are removed (`--expire-min` changes this). The SHT40 firmware in `arduino_firmware/` uses the same pipeline.
 
 Note: `server/`, `bridge/` and `arduino_firmware/` are in `.gitignore`.
