@@ -1,0 +1,387 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELT-295 Board Bridge</title>
+<style>
+  :root {
+    --bg: #0f172a; --card-bg: #1e293b; --card-border: #334155;
+    --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;
+    --ok: #22c55e; --off: #ef4444; --mono: Consolas, "SFMono-Regular", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 0.9rem; }
+  .card {
+    background: var(--card-bg); border: 1px solid var(--card-border);
+    border-radius: 10px; padding: 18px; max-width: 640px; margin-bottom: 16px;
+  }
+  label { display: block; font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+  input[type=text] {
+    width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--card-border);
+    background: #0b1220; color: var(--text); font-family: var(--mono); font-size: 0.9rem;
+    margin-bottom: 14px;
+  }
+  button {
+    background: var(--accent); color: #06111f; border: none; border-radius: 6px;
+    padding: 10px 16px; font-weight: 600; cursor: pointer; font-size: 0.9rem; margin-right: 8px;
+  }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: var(--card-border); color: var(--text); }
+  .status-row { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 0.95rem; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--off); flex-shrink: 0; }
+  .dot.on { background: var(--ok); }
+  .id-row { display: flex; gap: 8px; align-items: flex-end; }
+  .id-row > div { flex: 1; }
+  #log {
+    font-family: var(--mono); font-size: 0.78rem; background: #0b1220; border-radius: 6px;
+    padding: 10px; height: 220px; overflow-y: auto; line-height: 1.5; white-space: pre-wrap;
+  }
+  .raw { font-family: var(--mono); font-size: 0.8rem; background: #0b1220; border-radius: 6px; padding: 10px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+  .card h2 { font-size: 0.95rem; margin: 0 0 8px; }
+  .cmd { color: var(--muted); }
+  .pass { color: var(--ok); font-weight: 600; }
+  .fail { color: var(--off); font-weight: 600; }
+  .w { color: #fbbf24; }
+  .r { color: #34d399; }
+  .warn { color: #fbbf24; }
+  .err { color: #ef4444; }
+  .sent { color: #34d399; }
+  #unsupported {
+    display: none; background: #7f1d1d; border: 1px solid #ef4444; border-radius: 8px;
+    padding: 14px 18px; max-width: 640px; margin-bottom: 16px;
+  }
+</style>
+</head>
+<body>
+
+<h1>&#128268; ELT-295 Board Bridge</h1>
+<p class="sub">No install needed &mdash; runs entirely in this browser tab using the Web Serial API.</p>
+
+<div id="unsupported">
+  <strong>Web Serial isn't available here.</strong> Open this file in
+  <strong>Google Chrome</strong> or <strong>Microsoft Edge</strong> (both are
+  already on this PC, no download needed). Firefox and Safari don't support
+  this yet.
+</div>
+
+<div class="card">
+  <label for="serverUrl">Teacher's dashboard server URL</label>
+  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:5000">
+
+  <div class="status-row">
+    <span class="dot" id="connDot"></span>
+    <span id="connText">Not connected</span>
+  </div>
+
+  <button id="connectBtn">Connect to my Arduino&hellip;</button>
+  <button id="disconnectBtn" class="secondary" disabled>Disconnect</button>
+</div>
+
+<div class="card">
+  <div class="id-row">
+    <div>
+      <label for="idInput">Set this board's name (writes ID:name to the Uno)</label>
+      <input type="text" id="idInput" placeholder="e.g. TeamAlice">
+    </div>
+    <button id="setIdBtn" disabled>Set name</button>
+  </div>
+</div>
+
+<div id="rawPanels"></div>
+
+<div class="card">
+  <label>Activity log</label>
+  <div id="log"></div>
+</div>
+
+<script>
+let port = null;
+let reader = null;
+let readableStreamClosed = null;
+let keepReading = false;
+
+const logEl = document.getElementById("log");
+const connDot = document.getElementById("connDot");
+const connText = document.getElementById("connText");
+const connectBtn = document.getElementById("connectBtn");
+const disconnectBtn = document.getElementById("disconnectBtn");
+const setIdBtn = document.getElementById("setIdBtn");
+const serverUrlInput = document.getElementById("serverUrl");
+const idInput = document.getElementById("idInput");
+
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  const t = new Date().toLocaleTimeString();
+  line.textContent = `[${t}] ${msg}`;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setConnected(isConnected) {
+  connDot.classList.toggle("on", isConnected);
+  connText.textContent = isConnected ? "Connected, streaming telemetry" : "Not connected";
+  connectBtn.disabled = isConnected;
+  disconnectBtn.disabled = !isConnected;
+  setIdBtn.disabled = !isConnected;
+}
+
+if (!("serial" in navigator)) {
+  document.getElementById("unsupported").style.display = "block";
+  connectBtn.disabled = true;
+}
+
+// The teacher's dashboard fills this in when the file is downloaded from it.
+const DEFAULT_SERVER = "__SERVER_URL__";
+try {
+  const saved = localStorage.getItem("serverUrl");
+  serverUrlInput.value = saved || (DEFAULT_SERVER.startsWith("__") ? "" : DEFAULT_SERVER);
+  serverUrlInput.addEventListener("change", () => localStorage.setItem("serverUrl", serverUrlInput.value.trim()));
+} catch (e) { /* localStorage unavailable: the field just starts empty */ }
+
+async function openPort(p) {
+  await p.open({ baudRate: 115200 });
+  port = p;
+  setConnected(true);
+  log("Serial port opened at 115200 baud.");
+  keepReading = true;
+  readLoop();
+}
+
+// Reconnect without the picker: try every port this page was already allowed to use.
+async function autoConnect() {
+  if (port || !("serial" in navigator)) return;
+  for (const p of await navigator.serial.getPorts()) {
+    try {
+      await openPort(p);
+      log("Auto-connected to your Arduino.");
+      return;
+    } catch (e) {
+      log("Skipped a port (" + e.message + "). If it's your Arduino, close the Serial Monitor.", "warn");
+    }
+  }
+}
+
+connectBtn.addEventListener("click", async () => {
+  try {
+    await openPort(await navigator.serial.requestPort());
+  } catch (e) {
+    log("Could not open port: " + e.message + " (close the Arduino IDE Serial Monitor and try again)", "err");
+  }
+});
+
+if ("serial" in navigator) {
+  navigator.serial.addEventListener("connect", () => setTimeout(autoConnect, 1500)); // board plugged back in
+  autoConnect();                                                                      // page just opened
+}
+
+disconnectBtn.addEventListener("click", async () => {
+  await stopReading();
+});
+
+setIdBtn.addEventListener("click", async () => {
+  const name = idInput.value.trim();
+  if (!name || !port || !port.writable) return;
+  try {
+    const writer = port.writable.getWriter();
+    await writer.write(new TextEncoder().encode("ID:" + name + "\n"));
+    writer.releaseLock();
+    log(`Sent ID:${name} to the board.`);
+  } catch (e) {
+    log("Failed to send name: " + e.message, "err");
+  }
+});
+
+async function stopReading() {
+  keepReading = false;
+  try {
+    if (reader) { await reader.cancel(); reader.releaseLock(); }
+  } catch (e) { /* ignore */ }
+  try {
+    if (readableStreamClosed) await readableStreamClosed.catch(() => {});
+  } catch (e) { /* ignore */ }
+  try {
+    if (port) await port.close();
+  } catch (e) { /* ignore */ }
+  port = null;
+  setConnected(false);
+  log("Disconnected.");
+}
+
+async function readLoop() {
+  const textDecoder = new TextDecoderStream();
+  readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
+  reader = textDecoder.readable.getReader();
+  let buffer = "";
+
+  try {
+    while (keepReading) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += value;
+      let idx;
+      while ((idx = buffer.indexOf("\n")) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) handleLine(line);
+      }
+    }
+  } catch (e) {
+    log("Serial read error (board unplugged?): " + e.message, "err");
+    await stopReading();   // release the port so it can reconnect when plugged back in
+  }
+}
+
+// ---------- Raw data panels (what students investigate) ----------
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+const hx = b => "0x" + Number(b).toString(16).padStart(2, "0");
+const OW_CMDS = { 0xCC: "Skip ROM", 0x44: "Convert T", 0xBE: "Read Scratchpad", 0xB4: "Read Power Supply" };
+const SCRATCH_NAMES = ["Temp LSB", "Temp MSB", "TH alarm", "TL alarm", "Config (resolution)", "Reserved", "Reserved", "Reserved", "CRC"];
+
+function checkRow(label, ok) {
+  return `<span class="${ok ? "pass" : "fail"}">${ok ? "PASS" : "FAIL"}</span> ${label}\n`;
+}
+
+function ds18b20Panels(p) {
+  const d = p.ds18b20, b = d.bringup;
+  let out = "";
+
+  out += `<div class="card"><h2>Temperature sensor (DS18B20): raw data</h2><div class="raw">`;
+  out += `ROM code:      ${esc(d.rom || "--")}\n`;
+  out += `Power mode:    ${esc(d.power || "--")}\n`;
+  if (d.resolution_bits) out += `Resolution:    ${d.resolution_bits} bits\n`;
+  if (d.raw_temp !== undefined) {
+    out += `Raw temp reg:  ${d.raw_temp}  (0x${(d.raw_temp & 0xFFFF).toString(16).padStart(4, "0")})\n`;
+    out += `               ${d.raw_temp} / 16 = ${(d.raw_temp / 16).toFixed(2)} C = ${(d.raw_temp / 16 * 9 / 5 + 32).toFixed(2)} F\n`;
+  }
+  out += `Presence: ${d.presence ? "yes" : "NO"}   Scratchpad CRC: ${d.crc_ok ? "ok" : "BAD"}\n\nScratchpad (9 bytes):\n`;
+  (d.scratchpad || []).forEach((v, i) => { out += `  [${i}] ${hx(v)}  ${SCRATCH_NAMES[i] || ""}\n`; });
+  out += `</div></div>`;
+
+  if (b) {
+    out += `<div class="card"><h2>Board bring-up</h2><div class="raw">`
+      + checkRow("Stage 1: line idles HIGH", b.idle_high)
+      + checkRow("Stage 1: presence pulse", b.presence)
+      + checkRow("Stage 2: family code 0x28 (DS18B20)", b.family_ok)
+      + checkRow("Stage 2: ROM CRC", b.rom_crc_ok)
+      + checkRow("Stage 3: scratchpad CRC", b.scratch_crc_ok)
+      + checkRow("Stage 3: reading plausible", b.temp_ok)
+      + (b.pass ? `\n<span class="pass">ALL SYSTEMS GO</span>` : `\n<span class="fail">BRING-UP FAILED</span> (retries every 3 s; see the yellow lines in the log below)`)
+      + `</div></div>`;
+  }
+
+  out += `<div class="card"><h2>1-Wire bus traffic (this second)</h2><div class="raw">`;
+  const log = p.ow_log || [];
+  if (!log.length) out += `<span class="cmd">(none; this board's sketch may not send a bus log)</span>`;
+  out += log.map(m => {
+    const bytes = m.bytes || [];
+    if (m.op === "P") return `<span class="${bytes[0] ? "r" : "fail"}">RESET  presence pulse: ${bytes[0] ? "YES" : "NO"}</span>`;
+    const names = m.op === "W" ? bytes.map(v => OW_CMDS[v]).filter(Boolean).join(", ") : "";
+    return `<span class="${m.op === "W" ? "w" : "r"}">${m.op === "W" ? "WRITE" : "READ "}  [${bytes.map(hx).join(" ")}]</span>${names ? `  <span class="cmd">${names}</span>` : ""}`;
+  }).join("\n");
+  out += `</div></div>`;
+  return out;
+}
+
+function sht40Panels(p) {
+  const s = p.sht40, a = p.accel;
+  let out = "";
+  out += `<div class="card"><h2>Temperature / humidity (SHT40): raw data</h2><div class="raw">`
+    + (s.ok ? `Temperature: ${s.temp_c} C\nHumidity:    ${s.humidity_pct} %RH` : `<span class="fail">no valid reading</span>`)
+    + `</div></div>`;
+  if (a) {
+    out += `<div class="card"><h2>Accelerometer (LIS3DHTR): raw data</h2><div class="raw">`
+      + (a.ok ? `X: ${a.x_g} g\nY: ${a.y_g} g\nZ: ${a.z_g} g\nMagnitude: ${Math.sqrt(a.x_g ** 2 + a.y_g ** 2 + a.z_g ** 2).toFixed(3)} g  (about 1.000 g when still)` : `<span class="fail">no valid reading</span>`)
+      + `</div></div>`;
+  }
+  const log = p.i2c_log || [];
+  out += `<div class="card"><h2>I2C bus traffic (this second)</h2><div class="raw">`
+    + (log.length ? log.map(m => `<span class="${m.op === "W" ? "w" : "r"}">${m.op === "W" ? "WRITE" : "READ "} ${esc(m.addr)}  [${(m.bytes || []).map(hx).join(" ")}]</span>`).join("\n")
+                  : `<span class="cmd">(none this second)</span>`)
+    + `</div></div>`;
+  return out;
+}
+
+function micPanel(m) {
+  const b = m.bringup || {};
+  const bar = "#".repeat(Math.round((m.level || 0) / 5)).padEnd(20, ".");
+  return `<div class="card"><h2>HW-496 microphone module: raw data</h2><div class="raw">`
+    + checkRow("AO bias near mid-supply (not pinned at a rail)", b.in_range)
+    + checkRow("Responds to sound (clap test)", b.responds)
+    + checkRow("DO has flipped (clap, or turn the pot)", b.do_works)
+    + `\nAO bias:      ${m.bias} of 1023   (${(m.bias * 5 / 1023).toFixed(2)} V; the audio rides on this DC level)\n`
+    + `Last second:  min ${m.min}, max ${m.max}\n`
+    + `Loudness:     ${m.p2p} counts peak-to-peak (max - min)   [${bar}]\n`
+    + `Loudest ever: ${m.peak} counts since boot\n`
+    + `DO pin (D3):  ${m.do ? "HIGH" : "LOW"}   (${m.do_edges} changes since boot; comparator trips at the level set by the blue pot)\n`
+    + `Samples:      ${m.samples} per second\n`
+    + `\n<span class="cmd">Stay quiet, then clap next to the mic. Watch min/max spread out around the bias. Turn the blue pot: does DO trip sooner or later? Does AO change?</span>`
+    + `</div></div>`;
+}
+
+function updateRawPanels(p, line) {
+  let out = p.ds18b20 ? ds18b20Panels(p) : "";
+  if (p.mic) out += micPanel(p.mic);
+  if (p.sht40) out += sht40Panels(p);
+  out += `<div class="card"><h2>Raw line from the board</h2><div class="raw">${esc(line)}</div></div>`;
+  document.getElementById("rawPanels").innerHTML = out;
+}
+
+async function handleLine(line) {
+  let payload;
+  try {
+    payload = JSON.parse(line);
+  } catch (e) {
+    // Bring-up banners and human-readable text land here -- just show them.
+    log(line, "warn");
+    return;
+  }
+
+  if (!payload.sht40 && !payload.ds18b20) {
+    // Boot/event JSON (e.g. {"event":"boot_id",...}) -- log locally only.
+    log(JSON.stringify(payload));
+    return;
+  }
+
+  updateRawPanels(payload, line);   // show the raw data locally, even before a server URL is set
+
+  let serverUrl = serverUrlInput.value.trim().replace(/\/+$/, "");
+  if (serverUrl && !/^https?:\/\//i.test(serverUrl)) serverUrl = "http://" + serverUrl;
+  if (!serverUrl) {
+    log("Set the teacher's server URL above to start sending reports.", "warn");
+    return;
+  }
+
+  try {
+    const resp = await fetch(serverUrl + "/api/report", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (resp.ok) {
+      if (payload.sht40) {
+        log(`sent (${payload.id}): ${payload.sht40.temp_c}°C, ${payload.sht40.humidity_pct}%RH`, "sent");
+      } else {
+        const d = payload.ds18b20;
+        const why = !d.presence ? "no presence pulse" : !d.crc_ok ? "scratchpad CRC bad" : "bad reading";
+        log(`sent (${payload.id}): ${d.ok ? d.temp_f + "°F" : why}, alarm ${payload.alarm ? payload.alarm.state : "n/a"}`, d.ok ? "sent" : "warn");
+      }
+    } else {
+      log(`server rejected report: HTTP ${resp.status}`, "err");
+    }
+  } catch (e) {
+    log("Could not reach server (" + e.message + "). Check the URL and that you're on the same network.", "err");
+  }
+}
+</script>
+
+</body>
+</html>

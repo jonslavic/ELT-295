@@ -1,0 +1,456 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELT-295 Classroom IoT Dashboard</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --card-bg: #1e293b;
+    --card-border: #334155;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --ok: #22c55e;
+    --off: #ef4444;
+    --mono: "Consolas", "SFMono-Regular", Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+  }
+  header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  h1 { margin: 0; font-size: 1.4rem; }
+  #summary { color: var(--muted); font-size: 0.9rem; }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 16px;
+    position: relative;
+  }
+  .card.offline { opacity: 0.5; }
+  .card-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    font-size: 1.05rem;
+    margin-bottom: 10px;
+  }
+  .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--off);
+    flex-shrink: 0;
+  }
+  .dot.online { background: var(--ok); }
+  .readings {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px 12px;
+    font-size: 0.92rem;
+    margin-bottom: 10px;
+  }
+  .readings .label { color: var(--muted); }
+  .readings .value { text-align: right; font-variant-numeric: tabular-nums; }
+  .last-seen { font-size: 0.78rem; color: var(--muted); margin-bottom: 8px; }
+  details summary {
+    cursor: pointer;
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 6px;
+  }
+  .i2c-log {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    background: #0b1220;
+    border-radius: 6px;
+    padding: 8px;
+    max-height: 140px;
+    overflow-y: auto;
+    line-height: 1.4;
+  }
+  .badge { padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; background: var(--card-border); }
+  .badge.beep { background: #f59e0b; color: #1c1100; }
+  .badge.solid { background: var(--off); color: #fff; }
+  .viz { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .viz svg { display: block; }
+  .viz .gauge { flex: 1; min-width: 0; text-align: center; }
+  .viz .gauge-val { font-size: 1.35rem; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1; margin-top: -4px; }
+  .viz .gauge-sub { font-size: 0.78rem; color: var(--muted); margin-top: 2px; }
+  .speaker { text-align: center; width: 54px; flex-shrink: 0; }
+  .speaker .cap { font-size: 0.68rem; color: var(--muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .speaker .wave { fill: none; stroke-width: 3; stroke-linecap: round; }
+  .speaker.beep .wave { stroke: #f59e0b; animation: beep 0.5s steps(1, end) infinite; }
+  .speaker.solid .wave { stroke: var(--off); }
+  .speaker.beep .cap { color: #f59e0b; }
+  .speaker.solid .cap { color: var(--off); }
+  @keyframes beep { 0% { opacity: 1; } 50% { opacity: 0.1; } }
+  .accel { margin-bottom: 10px; }
+  .accel svg { width: 100%; height: auto; background: #0b1220; border-radius: 6px; }
+  .accel .legend { display: flex; justify-content: space-between; font-size: 0.8rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .pass { color: var(--ok); font-weight: 600; }
+  .fail { color: var(--off); font-weight: 600; }
+  .i2c-w { color: #fbbf24; }
+  .i2c-r { color: #34d399; }
+  #empty {
+    color: var(--muted);
+    padding: 40px;
+    text-align: center;
+    border: 1px dashed var(--card-border);
+    border-radius: 10px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#128225; ELT-295 Classroom IoT Dashboard</h1>
+  <div id="summary">Waiting for boards...</div>
+  <a id="bridgeLink" href="/bridge.html" download style="color:var(--accent);font-size:0.85rem">&#11015; Student bridge (download, then double-click)</a>
+</header>
+
+<div id="grid"></div>
+<div id="empty" style="display:none">No boards have reported in yet. Plug in an Uno and connect it from bridge.html.</div>
+
+<script>
+function fmt(n, digits) {
+  if (n === null || n === undefined || Number.isNaN(n)) return "--";
+  return Number(n).toFixed(digits);
+}
+
+// Board IDs come from students, so escape before putting them in HTML.
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+
+function byteHex(b) {
+  return "0x" + b.toString(16).padStart(2, "0");
+}
+
+function renderI2CLog(log) {
+  if (!log || log.length === 0) return "<div style='color:var(--muted)'>(no I2C traffic this cycle)</div>";
+  return log.map(m => {
+    const cls = m.op === "W" ? "i2c-w" : "i2c-r";
+    const bytes = (m.bytes || []).map(byteHex).join(" ");
+    return `<div class="${cls}">${m.op === "W" ? "WRITE" : "READ "} ${m.addr}  [${bytes}]</div>`;
+  }).join("");
+}
+
+// ---------- Visuals ----------
+const T_MIN_F = 50, T_MAX_F = 100;   // thermometer / gauge range
+const accelHist = {};                // device id -> [{x,y,z,t}] (last ACCEL_KEEP samples)
+const ACCEL_KEEP = 60;
+
+function tempPct(tF) {
+  return Math.max(0, Math.min(1, (tF - T_MIN_F) / (T_MAX_F - T_MIN_F)));
+}
+
+function tempColor(tF, alarm) {
+  if (alarm && tF >= alarm.solid_on_f) return "#ef4444";
+  if (alarm && tF >= alarm.beep_on_f) return "#f59e0b";
+  return "#38bdf8";
+}
+
+function thermometerSvg(tF, alarm) {
+  const top = 10, bottom = 94, h = bottom - top;
+  const level = tF === null ? 0 : tempPct(tF) * h;
+  const color = tF === null ? "#475569" : tempColor(tF, alarm);
+  let ticks = "";
+  if (alarm) {
+    for (const [v, c] of [[alarm.beep_on_f, "#f59e0b"], [alarm.solid_on_f, "#ef4444"]]) {
+      const y = bottom - tempPct(v) * h;
+      ticks += `<line x1="11" x2="29" y1="${y}" y2="${y}" stroke="${c}" stroke-width="1.5"/>`;
+    }
+  }
+  return `<svg width="40" height="118" viewBox="0 0 40 118" aria-label="thermometer">
+    <rect x="15" y="${top}" width="10" height="${h + 6}" rx="5" fill="#0b1220" stroke="#475569"/>
+    <circle cx="20" cy="101" r="13" fill="#0b1220" stroke="#475569"/>
+    <rect x="17.5" y="${bottom - level}" width="5" height="${level + 8}" fill="${color}"/>
+    <circle cx="20" cy="101" r="10" fill="${color}"/>
+    ${ticks}
+  </svg>`;
+}
+
+function gaugeSvg(tF, alarm) {
+  const cx = 60, cy = 62, r = 48;
+  const pt = (p, rad = r) => [cx + rad * Math.cos(Math.PI * (1 - p)), cy - rad * Math.sin(Math.PI * (1 - p))];
+  const arc = (p1, p2, color, w) => {
+    const [x1, y1] = pt(p1), [x2, y2] = pt(p2);
+    return `<path d="M${x1.toFixed(1)} ${y1.toFixed(1)} A${r} ${r} 0 0 1 ${x2.toFixed(1)} ${y2.toFixed(1)}" fill="none" stroke="${color}" stroke-width="${w}"/>`;
+  };
+  let zones;
+  if (alarm) {
+    const a = tempPct(alarm.beep_on_f), b = tempPct(alarm.solid_on_f);
+    zones = arc(0, a, "#1d6f94", 9) + arc(a, b, "#b7791f", 9) + arc(b, 1, "#b42323", 9);
+  } else {
+    zones = arc(0, 1, "#1d6f94", 9);
+  }
+  let needle = "";
+  if (tF !== null) {
+    const [nx, ny] = pt(tempPct(tF), r - 12);
+    needle = `<line x1="${cx}" y1="${cy}" x2="${nx.toFixed(1)}" y2="${ny.toFixed(1)}" stroke="#e2e8f0" stroke-width="3" stroke-linecap="round"/>
+              <circle cx="${cx}" cy="${cy}" r="5" fill="#e2e8f0"/>`;
+  }
+  const [lx, ly] = pt(0, r + 11), [rx, ry] = pt(1, r + 11);
+  return `<svg viewBox="-12 0 144 76" width="100%" style="max-width:180px" aria-label="temperature gauge">
+    ${zones}${needle}
+    <text x="${lx.toFixed(1)}" y="${(ly + 4).toFixed(1)}" fill="#94a3b8" font-size="9" text-anchor="middle">${T_MIN_F}</text>
+    <text x="${rx.toFixed(1)}" y="${(ry + 4).toFixed(1)}" fill="#94a3b8" font-size="9" text-anchor="middle">${T_MAX_F}</text>
+  </svg>`;
+}
+
+function speakerSvg(stateName) {
+  const st = String(stateName || "OFF").toLowerCase();
+  const body = st === "off" ? "#64748b" : "#e2e8f0";
+  const extra = st === "off"
+    ? `<path d="M31 18 L43 30 M43 18 L31 30" stroke="#64748b" stroke-width="3" stroke-linecap="round"/>`
+    : `<path class="wave" d="M31 17 Q37 24 31 31"/><path class="wave" d="M36 11 Q47 24 36 37"/>`;
+  const cap = { off: "silent", beep: "beeping", solid: "solid" }[st] || st;
+  return `<div class="speaker ${st}">
+    <svg width="48" height="48" viewBox="0 0 48 48" aria-label="speaker ${cap}">
+      <path d="M5 18 h8 l11 -9 v30 l-11 -9 h-8 z" fill="${body}"/>${extra}
+    </svg><div class="cap">${cap}</div></div>`;
+}
+
+function pushAccel(id, acc, uptime) {
+  const h = accelHist[id] || (accelHist[id] = []);
+  const last = h[h.length - 1];
+  if (last && last.t === uptime) return;   // same report seen twice
+  h.push({ x: acc.x_g, y: acc.y_g, z: acc.z_g, t: uptime });
+  if (h.length > ACCEL_KEEP) h.shift();
+}
+
+function accelGraphSvg(id, acc) {
+  const h = accelHist[id] || [];
+  const W = 240, H = 90, G = 2;   // +/- G g full scale
+  const yOf = g => H / 2 - (Math.max(-G, Math.min(G, g)) / G) * (H / 2 - 4);
+  const line = (key, color) => {
+    if (h.length < 2) return "";
+    const pts = h.map((s, i) => `${(i / (ACCEL_KEEP - 1) * W).toFixed(1)},${yOf(s[key]).toFixed(1)}`).join(" ");
+    return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
+  };
+  const grid = [-1, 0, 1].map(g => `<line x1="0" x2="${W}" y1="${yOf(g)}" y2="${yOf(g)}" stroke="#334155" stroke-width="${g === 0 ? 1 : 0.5}" ${g === 0 ? "" : 'stroke-dasharray="3 3"'}/>`).join("");
+  const labels = [[1, "+1g"], [0, "0"], [-1, "-1g"]].map(([g, t]) => `<text x="3" y="${yOf(g) - 2}" fill="#64748b" font-size="7">${t}</text>`).join("");
+  return `<div class="accel">
+    <svg viewBox="0 0 ${W} ${H}" aria-label="acceleration XYZ graph">${grid}${labels}${line("x", "#f87171")}${line("y", "#4ade80")}${line("z", "#60a5fa")}</svg>
+    <div class="legend">
+      <span style="color:#f87171">X ${acc.ok ? fmt(acc.x_g, 2) : "--"} g</span>
+      <span style="color:#4ade80">Y ${acc.ok ? fmt(acc.y_g, 2) : "--"} g</span>
+      <span style="color:#60a5fa">Z ${acc.ok ? fmt(acc.z_g, 2) : "--"} g</span>
+    </div></div>`;
+}
+
+// HW-496 sound level as a small meter plus the loudest swing seen since boot
+function micMeter(m) {
+  const pct = Math.max(0, Math.min(100, Number(m.level) || 0));
+  const color = !m.ok ? "#ef4444" : pct > 66 ? "#ef4444" : pct > 33 ? "#f59e0b" : "#22c55e";
+  return `<span style="display:inline-block;width:70px;height:8px;background:#0b1220;border:1px solid #475569;border-radius:4px;vertical-align:middle;margin-right:6px">
+      <span style="display:block;width:${pct}%;height:100%;background:${color};border-radius:3px"></span></span>${m.p2p}
+      <span style="color:var(--muted);font-size:0.8rem">(peak ${m.peak})</span>${m.do ? " &#128266;" : ""}`;
+}
+
+function renderMic(m) {
+  const b = m.bringup || {};
+  return checkRow("AO bias near mid-supply (not pinned at a rail)", b.in_range)
+    + checkRow("Responds to sound (clap test: swing 100+)", b.responds)
+    + checkRow("DO has flipped (clap, or turn the pot)", b.do_works)
+    + `<div style="margin-top:6px">Bias (average): ${m.bias} / 1023 &nbsp;(${(m.bias * 5 / 1023).toFixed(2)} V)</div>`
+    + `<div>Last second: min ${m.min}, max ${m.max}, swing ${m.p2p}</div>`
+    + `<div>Loudest swing since boot: ${m.peak}</div>`
+    + `<div>DO pin: ${m.do ? "HIGH" : "LOW"} &nbsp;(${m.do_edges} changes since boot)</div>`
+    + `<div>Samples per second: ${m.samples}</div>`;
+}
+
+const OW_CMDS = { 0xCC: "Skip ROM", 0x44: "Convert T", 0xBE: "Read Scratchpad", 0xB4: "Read Power Supply", 0x33: "Read ROM", 0x4E: "Write Scratchpad" };
+
+function renderOwLog(log) {
+  if (!log || log.length === 0) return "<div style='color:var(--muted)'>(no 1-Wire traffic this cycle)</div>";
+  return log.map(m => {
+    const bytes = (m.bytes || []);
+    if (m.op === "P") {
+      return `<div class="${bytes[0] ? "i2c-r" : "fail"}">RESET  presence pulse: ${bytes[0] ? "YES" : "NO"}</div>`;
+    }
+    const hex = bytes.map(byteHex).join(" ");
+    if (m.op === "W") {
+      const names = bytes.map(b => OW_CMDS[b]).filter(Boolean).join(", ");
+      return `<div class="i2c-w">WRITE  [${hex}]${names ? "  " + names : ""}</div>`;
+    }
+    return `<div class="i2c-r">READ   [${hex}]</div>`;
+  }).join("");
+}
+
+function checkRow(label, ok, note) {
+  const cls = ok ? "pass" : "fail";
+  return `<div><span class="${cls}">${ok ? "PASS" : "FAIL"}</span> ${label}${note ? " <span style='color:var(--muted)'>" + note + "</span>" : ""}</div>`;
+}
+
+function renderBringUp(ds) {
+  const b = ds.bringup;
+  if (!b) return "<div style='color:var(--muted)'>(no bring-up data)</div>";
+  return checkRow("Stage 1: line idles HIGH", b.idle_high)
+    + checkRow("Stage 1: presence pulse", b.presence)
+    + checkRow("Stage 2: family code 0x28 (DS18B20)", b.family_ok)
+    + checkRow("Stage 2: ROM CRC", b.rom_crc_ok)
+    + checkRow("Stage 3: scratchpad CRC", b.scratch_crc_ok)
+    + checkRow("Stage 3: reading plausible", b.temp_ok)
+    + `<div style="margin-top:6px">${b.pass ? "<span class='pass'>ALL SYSTEMS GO</span>" : "<span class='fail'>BRING-UP FAILED</span> (board retries every 3 s)"}</div>`
+    + `<div style="margin-top:6px;color:var(--muted)">Live: presence ${ds.presence ? "yes" : "NO"}, scratchpad CRC ${ds.crc_ok ? "ok" : "BAD"}</div>`;
+}
+
+function renderSensor(ds) {
+  const sp = ds.scratchpad || [];
+  const hex = sp.map(byteHex).join(" ");
+  const names = ["Temp LSB", "Temp MSB", "TH", "TL", "Config", "Reserved", "Reserved", "Reserved", "CRC"];
+  const detail = sp.map((b, i) => `${byteHex(b)} ${names[i] || ""}`).join("\n");
+  let out = `<div>ROM: ${esc(ds.rom || "--")}</div>`
+    + `<div>Power: ${esc(ds.power || "--")}</div>`
+    + `<div>Resolution: ${ds.resolution_bits ? ds.resolution_bits + " bits" : "--"}</div>`;
+  if (ds.raw_temp !== undefined) {
+    out += `<div>Raw temp register: ${ds.raw_temp} (0x${(ds.raw_temp & 0xFFFF).toString(16).padStart(4, "0")}) &divide; 16 = ${(ds.raw_temp / 16).toFixed(2)} &deg;C</div>`;
+  }
+  out += `<div style="margin-top:6px">Scratchpad:</div><div style="white-space:pre">${esc(detail || hex || "--")}</div>`;
+  return out;
+}
+
+async function poll() {
+  try {
+    const res = await fetch("/api/devices");
+    const devices = await res.json();
+
+    document.getElementById("empty").style.display = devices.length === 0 ? "block" : "none";
+    const onlineCount = devices.filter(d => d.online).length;
+    document.getElementById("summary").textContent =
+      `${onlineCount} online / ${devices.length} total board(s) seen`;
+
+    const grid = document.getElementById("grid");
+    // Cards are rebuilt every second: remember which panels are open (and the log scroll) so they stay put.
+    const openKeys = new Set([...grid.querySelectorAll("details[open]")].map(e => e.dataset.key));
+    const scrolls = {};
+    grid.querySelectorAll("details[data-key]").forEach(e => {
+      const box = e.querySelector(".i2c-log");
+      if (box) scrolls[e.dataset.key] = box.scrollTop;
+    });
+    for (const id of Object.keys(accelHist)) {   // drop graphs of boards the server expired
+      if (!devices.some(d => d.id === id)) delete accelHist[id];
+    }
+    grid.innerHTML = devices.map(d => {
+      const data = d.data || {};
+      const sht = data.sht40;
+      const acc = data.accel;
+      const ds = data.ds18b20;
+      const alarm = data.alarm;
+      // Temperature in F for the thermometer/gauge, from whichever sensor this board has
+      let tC = null;
+      if (ds && ds.ok) tC = ds.temp_c;
+      else if (sht && sht.ok) tC = sht.temp_c;
+      const tF = tC === null || tC === undefined ? null : tC * 9 / 5 + 32;
+
+      let rows = "";
+      if (sht) {
+        rows += `<div class="label">Humidity</div><div class="value">${sht.ok ? fmt(sht.humidity_pct, 1) + " %" : "--"}</div>`;
+      }
+      if (ds) {
+        rows += `<div class="label">Bring-up</div><div class="value">${ds.bringup ? (ds.bringup.pass ? "<span class='pass'>PASS</span>" : "<span class='fail'>FAIL</span>") : "--"}</div>`;
+      }
+      if (alarm) {
+        rows += `<div class="label">Thresholds</div><div class="value">${fmt(alarm.beep_on_f, 0)} / ${fmt(alarm.solid_on_f, 0)} &deg;F</div>`;
+      }
+
+      const mic = data.mic;
+      if (mic) {
+        rows += `<div class="label">Sound</div><div class="value">${micMeter(mic)}</div>`;
+      }
+
+      let viz = "";
+      if (sht || ds) {
+        viz = `<div class="viz">
+            ${thermometerSvg(tF, alarm)}
+            <div class="gauge">
+              ${gaugeSvg(tF, alarm)}
+              <div class="gauge-val">${tF === null ? "--" : fmt(tF, 1) + " &deg;F"}</div>
+              <div class="gauge-sub">${tF === null ? "no valid reading" : fmt(tC, 1) + " &deg;C"}</div>
+            </div>
+            ${alarm ? speakerSvg(alarm.state) : ""}
+          </div>`;
+      }
+      let accelViz = "";
+      if (acc) {
+        if (acc.ok) pushAccel(d.id, acc, data.uptime_ms);
+        accelViz = accelGraphSvg(d.id, acc);
+      }
+      const i2c = data.i2c_log
+        ? `<details data-key="${esc(d.id)}:i2c">
+            <summary>I2C messages (this cycle)</summary>
+            <div class="i2c-log">${renderI2CLog(data.i2c_log)}</div>
+          </details>`
+        : "";
+      const micPanelHtml = mic
+        ? `<details data-key="${esc(d.id)}:mic">
+            <summary>HW-496 microphone module</summary>
+            <div class="i2c-log">${renderMic(mic)}</div>
+          </details>`
+        : "";
+      const ow = ds && !ds.bringup
+        ? `<div class="fail" style="font-size:0.85rem">This board is running an older sketch with no bring-up or 1-Wire data. Re-upload TempAlarm_Net.ino from the Arduino IDE.</div>`
+        : ds
+        ? `<details data-key="${esc(d.id)}:bringup">
+            <summary>Bring-up checks</summary>
+            <div class="i2c-log">${renderBringUp(ds)}</div>
+          </details>
+          <details data-key="${esc(d.id)}:sensor">
+            <summary>Sensor details (ROM, scratchpad)</summary>
+            <div class="i2c-log">${renderSensor(ds)}</div>
+          </details>
+          <details data-key="${esc(d.id)}:ow">
+            <summary>1-Wire messages (this cycle)</summary>
+            <div class="i2c-log">${renderOwLog(data.ow_log)}</div>
+          </details>`
+        : "";
+      return `
+        <div class="card ${d.online ? "" : "offline"}">
+          <div class="card-title">
+            <span class="dot ${d.online ? "online" : ""}"></span>
+            ${esc(d.id)}
+          </div>
+          <div class="last-seen">last seen ${d.seconds_since_seen}s ago</div>
+          ${viz}${accelViz}
+          <div class="readings">${rows}</div>
+          ${i2c}${ow}${micPanelHtml}
+        </div>`;
+    }).join("");
+    grid.querySelectorAll("details[data-key]").forEach(e => {
+      if (openKeys.has(e.dataset.key)) {
+        e.open = true;
+        const box = e.querySelector(".i2c-log");
+        if (box && scrolls[e.dataset.key]) box.scrollTop = scrolls[e.dataset.key];
+      }
+    });
+  } catch (e) {
+    document.getElementById("summary").textContent = "Could not reach server...";
+  }
+}
+
+poll();
+setInterval(poll, 1000);
+</script>
+
+</body>
+</html>
