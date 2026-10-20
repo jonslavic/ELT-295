@@ -8,7 +8,7 @@
 //
 // Wiring:
 //   HW-506 VCC -> 5V, GND -> GND, signal -> D2
-//   HW-508 S   -> D8, - -> GND, middle pin not connected (no VCC pin)
+//   HW-508 S   -> D9, - -> GND, middle pin not connected (no VCC pin)
 //
 // Libraries: OneWire (Paul Stoffregen), DallasTemperature (Miles Burton)
 
@@ -16,7 +16,7 @@
 #include <DallasTemperature.h>
 
 const int ONE_WIRE_PIN = 2;
-const int BUZZER_PIN   = 8;
+const int BUZZER_PIN   = 9;
 
 const float BEEP_ON_F  = 77.0;   // start beeping
 const float SOLID_ON_F = 78.0;   // go solid

@@ -3,13 +3,13 @@
 // square wave, so use tone(). Plain digitalWrite(HIGH) gives just a click.
 //
 // Wiring (verify against the silkscreen on your board):
-//   Module S (signal) -> Uno D8
+//   Module S (signal) -> Uno D9
 //   Module middle pin -> not connected (leave unwired)
 //   Module -  (GND)   -> Uno GND
 //   The signal pin powers the buzzer; there is no VCC pin on this module.
 //   2 kHz is near its resonant frequency (loudest).
 
-const int BUZZER_PIN = 8;
+const int BUZZER_PIN = 9;
 
 void setup() {
   Serial.begin(9600);
