@@ -1,0 +1,45 @@
+# ELT 295 Labs
+
+Arduino Uno sketches for ELT 295 lab work.
+
+## Sketches
+
+| Folder | Purpose |
+|---|---|
+| `TempSensor_DS18B20/` | Reads the HW-506 (DS18B20) digital temperature sensor and prints °C/°F to the Serial Monitor |
+| `DS18B20_Diagnostic/` | Troubleshooting: reports line idle level, presence pulse and ROM code |
+| `TempSensor/` | Analog TMP36 on A0 (for analog-sensor labs) |
+
+## HW-506 (DS18B20) setup
+
+The DS18B20 is a digital 1-Wire sensor. It does not output an analog voltage, so it connects to D2, not A0.
+
+| Module pin | Uno pin |
+|---|---|
+| VCC / + | 5V |
+| GND / - | GND |
+| S / DQ / OUT | D2 |
+
+Check the silkscreen on your board before powering it. If the chip gets warm, unplug it; power and ground are reversed.
+
+### Libraries
+
+Install in the Arduino IDE (Library Manager, Ctrl+Shift+I):
+
+- **OneWire** (Paul Stoffregen)
+- **DallasTemperature** (Miles Burton), and choose "Install all" for dependencies
+
+### Run
+
+1. Open `TempSensor_DS18B20/TempSensor_DS18B20.ino`.
+2. Select **Tools → Board → Arduino Uno** and your COM port, then Upload.
+3. Open **Tools → Serial Monitor** at **9600** baud.
+
+Expected output: `Temp: 22.50 C / 72.50 F` once per second. Pinching the sensor should raise the reading.
+
+### Troubleshooting
+
+- "Sensor not found" or `-127 C`: power the module from 5V (not 3.3V), check the signal pin goes to D2, and run `DS18B20_Diagnostic`. If needed, add a 4.7 kΩ resistor between signal and 5V.
+- Diagnostic shows `Presence pulse: YES` and family code `0x28`: the sensor is good.
+- Garbled Serial Monitor text: set baud to 9600.
+- `OneWire.h` or `DallasTemperature.h` not found: install the libraries above.

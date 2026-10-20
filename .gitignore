@@ -1,0 +1,11 @@
+build/
+*.hex
+*.elf
+*.bin
+*.bak
+.vscode/
+.claude/
+arduino_firmware/
+bridge/
+server/
+design-handoff.md
