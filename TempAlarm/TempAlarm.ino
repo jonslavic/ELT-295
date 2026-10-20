@@ -3,7 +3,7 @@
 //   Below 77 F          -> silent
 //   77 F and above      -> beeping
 //   78 F and above      -> solid tone
-//   Hysteresis (3 F):   solid -> beeping below 75 F, beeping -> silent below 74 F
+//   Hysteresis (1 F):   solid -> beeping below 77 F, beeping -> silent below 76 F
 //   (thresholds are BEEP_ON_F / SOLID_ON_F / HYST_F below)
 //
 // Wiring:
@@ -20,7 +20,7 @@ const int BUZZER_PIN   = 9;
 
 const float BEEP_ON_F  = 77.0;   // start beeping
 const float SOLID_ON_F = 78.0;   // go solid
-const float HYST_F     = 3.0;    // hysteresis band
+const float HYST_F     = 1.0;    // hysteresis band
 
 const int           TONE_HZ      = 2000;
 const unsigned long BEEP_MS      = 250;   // beep on / off time
