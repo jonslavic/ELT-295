@@ -24,7 +24,13 @@
 // Wiring:
 //   HW-506 VCC -> 5V, GND -> GND, signal -> D2
 //   HW-508 S   -> D9, - -> GND, middle pin not connected (no VCC pin)
+//   HW-503 light sensor (LDR module): VCC -> 5V, GND -> GND, AO -> A0, DO -> D3
 //   Exactly one DS18B20 on the bus (commands use Skip ROM 0xCC).
+//
+// Light sensor: reports raw ADC (0-1023), a brightness %, the DO pin level, and the
+//   min/max seen since boot. "Responds" turns PASS once the value has swung by 100+
+//   counts, so cover the sensor with your hand to prove it works. Set LIGHT_INVERT
+//   below if your module reads higher when dark.
 //
 // Library: OneWire (Paul Stoffregen)
 
@@ -33,6 +39,12 @@
 
 const int ONE_WIRE_PIN = 2;
 const int BUZZER_PIN   = 9;
+const int LIGHT_AO_PIN = A0;   // HW-503 analog output
+const int LIGHT_DO_PIN = 3;    // HW-503 digital output (threshold set by the blue pot)
+
+// Which way does your HW-503 read? Do the cover test (hand over the sensor):
+//   raw value goes DOWN when covered -> false   raw value goes UP when covered -> true
+const bool LIGHT_INVERT = false;
 
 const float BEEP_ON_F  = 77.0;   // start beeping
 const float SOLID_ON_F = 80.0;   // go solid
@@ -84,6 +96,55 @@ struct BringUp {
 } bu;
 
 bool lastReadOk = false;
+
+// ---------- Light sensor (HW-503) ----------
+int     lightRaw = 0;            // 0..1023, average of 8 ADC samples
+int     lightSpread = 0;         // max - min of those 8 samples (noise check)
+int     lightMin = 1023, lightMax = 0;   // range seen since boot (cover test)
+bool    lightDo = false;         // digital output level
+bool    lightInRange = false, lightStable = false;
+
+void readLight() {
+  int mn = 1023, mx = 0;
+  long sum = 0;
+  for (uint8_t i = 0; i < 8; i++) {
+    int v = analogRead(LIGHT_AO_PIN);
+    sum += v;
+    if (v < mn) mn = v;
+    if (v > mx) mx = v;
+  }
+  lightRaw = sum / 8;
+  lightSpread = mx - mn;
+  lightDo = digitalRead(LIGHT_DO_PIN) == HIGH;
+  if (lightRaw < lightMin) lightMin = lightRaw;
+  if (lightRaw > lightMax) lightMax = lightRaw;
+  lightInRange = lightRaw >= 8 && lightRaw <= 1015;   // pinned at a rail = open, shorted or unpowered
+  lightStable  = lightSpread <= 25;                   // a floating input jumps around
+}
+
+int lightPct() {
+  int p = (int)((long)lightRaw * 100 / 1023);
+  return LIGHT_INVERT ? 100 - p : p;
+}
+
+// Boot-time report for the light sensor (the live flags are also sent every second)
+void runLightBringUp() {
+  Serial.println(F("---- LIGHT SENSOR (HW-503) ----"));
+  readLight();
+  Serial.print(F("  analog AO (A0): ")); Serial.print(lightRaw);
+  Serial.print(F(" of 1023, noise "));   Serial.print(lightSpread);
+  Serial.print(F(" -> "));
+  if (!lightInRange) {
+    Serial.println(F("[FAIL] pinned at a rail: AO not on A0, VCC/GND missing, or shorted"));
+  } else if (!lightStable) {
+    Serial.println(F("[FAIL] noisy: loose AO wire (a floating input jumps around)"));
+  } else {
+    Serial.println(F("[PASS]"));
+  }
+  Serial.print(F("  digital DO (D3): ")); Serial.println(lightDo ? F("HIGH") : F("LOW"));
+  Serial.println(F("  functional test: cover the sensor with your hand; the value must change a lot."));
+  Serial.println();
+}
 
 const char *stateName(AlarmState s) {
   return s == ALARM_OFF ? "OFF" : s == ALARM_BEEP ? "BEEP" : "SOLID";
@@ -356,6 +417,20 @@ void sendReport(bool presence, bool crcOk, bool ok) {
   Serial.print(F(",\"pass\":"));          printBool(bu.pass);
   Serial.print(F("}}"));
 
+  int swing = lightMax - lightMin;
+  Serial.print(F(",\"light\":{\"raw\":"));   Serial.print(lightRaw);
+  Serial.print(F(",\"pct\":"));              Serial.print(lightPct());
+  Serial.print(F(",\"do\":"));               Serial.print(lightDo ? 1 : 0);
+  Serial.print(F(",\"spread\":"));           Serial.print(lightSpread);
+  Serial.print(F(",\"min\":"));              Serial.print(lightMin);
+  Serial.print(F(",\"max\":"));              Serial.print(lightMax);
+  Serial.print(F(",\"invert\":"));           printBool(LIGHT_INVERT);
+  Serial.print(F(",\"bringup\":{\"in_range\":")); printBool(lightInRange);
+  Serial.print(F(",\"stable\":"));           printBool(lightStable);
+  Serial.print(F(",\"responds\":"));         printBool(swing >= 100);
+  Serial.print(F(",\"pass\":"));             printBool(lightInRange && lightStable);
+  Serial.print(F("}}"));
+
   Serial.print(F(",\"alarm\":{\"state\":\"")); Serial.print(stateName(state));
   Serial.print(F("\",\"beep_on_f\":"));  Serial.print(BEEP_ON_F, 1);
   Serial.print(F(",\"solid_on_f\":"));   Serial.print(SOLID_ON_F, 1);
@@ -392,6 +467,7 @@ void readCycle() {
   bool ok = presence && crcOk && rawTemp() != 0x0550;
 
   owCommand(OW_CONVERT_T);  // start the next conversion
+  readLight();
 
   if (ok) state = nextState(state, tempC() * 9.0f / 5.0f + 32.0f);
   else    state = ALARM_OFF;
@@ -407,10 +483,12 @@ void setup() {
   loadDeviceId();
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
+  pinMode(LIGHT_DO_PIN, INPUT);
 
   Serial.print(F("{\"event\":\"boot_id\",\"id\":\"")); Serial.print(deviceId); Serial.println(F("\"}"));
 
   runBringUp();
+  runLightBringUp();
   owCommand(OW_CONVERT_T);          // first conversion for the first report
   lastBringUp = lastRead = millis();
 }
