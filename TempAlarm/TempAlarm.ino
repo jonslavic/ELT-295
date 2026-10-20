@@ -1,9 +1,10 @@
 // ELT295 Lab - Temperature alarm: HW-506 (DS18B20) + HW-508 passive buzzer
 //
-//   Below 80 F          -> silent
-//   80 F and above      -> beeping
-//   85 F and above      -> solid tone
-//   Hysteresis (3 F):   solid -> beeping below 82 F, beeping -> silent below 77 F
+//   Below 77 F          -> silent
+//   77 F and above      -> beeping
+//   78 F and above      -> solid tone
+//   Hysteresis (3 F):   solid -> beeping below 75 F, beeping -> silent below 74 F
+//   (thresholds are BEEP_ON_F / SOLID_ON_F / HYST_F below)
 //
 // Wiring:
 //   HW-506 VCC -> 5V, GND -> GND, signal -> D2
@@ -17,8 +18,8 @@
 const int ONE_WIRE_PIN = 2;
 const int BUZZER_PIN   = 8;
 
-const float BEEP_ON_F  = 80.0;   // start beeping
-const float SOLID_ON_F = 85.0;   // go solid
+const float BEEP_ON_F  = 77.0;   // start beeping
+const float SOLID_ON_F = 78.0;   // go solid
 const float HYST_F     = 3.0;    // hysteresis band
 
 const int           TONE_HZ      = 2000;
