@@ -7,6 +7,8 @@ Arduino Uno sketches for ELT 295 lab work.
 | Folder | Purpose |
 |---|---|
 | `TempSensor_DS18B20/` | Reads the HW-506 (DS18B20) digital temperature sensor and prints °C/°F to the Serial Monitor |
+| `Buzzer_HW508/` | Tests the HW-508 passive buzzer (S → D8, - → GND, middle pin unconnected) |
+| `TempAlarm/` | DS18B20 + buzzer: beeps at 80 °F, solid at 85 °F, 3 °F hysteresis |
 | `DS18B20_Diagnostic/` | Troubleshooting: reports line idle level, presence pulse and ROM code |
 | `TempSensor/` | Analog TMP36 on A0 (for analog-sensor labs) |
 
