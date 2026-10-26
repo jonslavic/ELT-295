@@ -19,7 +19,9 @@
 //   (thresholds and hysteresis are the constants below)
 //
 // Naming your board: send  ID:YourName  (Serial Monitor or the bridge page).
-//   Saved to EEPROM. Unnamed boards appear on the dashboard as uno-XXXX.
+//   Saved to EEPROM. Every board also has a permanent hardware ID (uno-XXXXXXXX), made the
+//   first time it runs this sketch; the dashboard keeps one card per hardware ID, so a rename
+//   updates the same card. Unnamed boards show their hardware ID as the name.
 //
 // Wiring:
 //   HW-506 VCC -> 5V, GND -> GND, signal -> D2
@@ -61,7 +63,13 @@ const unsigned long RETRY_MS = 3000; // re-run bring-up this often while failing
 
 #define EEPROM_ID_ADDR   0
 #define EEPROM_ID_MAXLEN 20
-char deviceId[EEPROM_ID_MAXLEN + 1];
+char deviceId[EEPROM_ID_MAXLEN + 1];   // display name (changeable with ID:Name)
+
+// Permanent hardware ID: made once, never changes when the name does. The dashboard keys on this,
+// so renaming a board updates its card instead of creating a new one.
+#define EEPROM_UID_ADDR  32            // magic byte, then 4 random bytes
+#define EEPROM_UID_MAGIC 0xC3
+char deviceUid[13];                    // "uno-" + 8 hex digits
 
 enum AlarmState { ALARM_OFF, ALARM_BEEP, ALARM_SOLID };
 AlarmState state = ALARM_OFF;
@@ -347,6 +355,19 @@ bool runBringUp() {
 
 // ================= Device ID (EEPROM) =================
 
+// Read this board's permanent ID from EEPROM, creating it the first time the board runs this sketch
+void loadUid() {
+  if (EEPROM.read(EEPROM_UID_ADDR) != EEPROM_UID_MAGIC) {
+    // Noise from two floating analog pins plus the boot-time timer: different on every board
+    randomSeed(((uint32_t)analogRead(A5) << 16) ^ ((uint32_t)analogRead(A4) << 8) ^ micros());
+    for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_UID_ADDR + 1 + i, random(0, 256));
+    EEPROM.update(EEPROM_UID_ADDR, EEPROM_UID_MAGIC);   // magic last: a half-written ID is redone
+  }
+  snprintf(deviceUid, sizeof(deviceUid), "uno-%02X%02X%02X%02X",
+           EEPROM.read(EEPROM_UID_ADDR + 1), EEPROM.read(EEPROM_UID_ADDR + 2),
+           EEPROM.read(EEPROM_UID_ADDR + 3), EEPROM.read(EEPROM_UID_ADDR + 4));
+}
+
 void loadDeviceId() {
   for (uint8_t i = 0; i < EEPROM_ID_MAXLEN; i++) {
     deviceId[i] = EEPROM.read(EEPROM_ID_ADDR + i);
@@ -358,10 +379,7 @@ void loadDeviceId() {
     if (deviceId[i] < 32 || deviceId[i] > 126) valid = false;
   }
 
-  if (!valid) {
-    randomSeed(analogRead(A5));  // floating pin noise
-    snprintf(deviceId, sizeof(deviceId), "uno-%04X", (unsigned)random(0, 0xFFFF));
-  }
+  if (!valid) strcpy(deviceId, deviceUid);   // no name set yet: show the hardware ID
 }
 
 void saveDeviceId(const char *name) {
@@ -408,6 +426,7 @@ void sendReport(bool presence, bool crcOk, bool ok) {
   float f = c * 9.0f / 5.0f + 32.0f;
 
   Serial.print(F("{\"id\":\""));          Serial.print(deviceId);
+  Serial.print(F("\",\"uid\":\""));       Serial.print(deviceUid);
   Serial.print(F("\",\"uptime_ms\":"));   Serial.print(millis());
 
   Serial.print(F(",\"ds18b20\":{\"ok\":")); printBool(ok);
@@ -500,12 +519,14 @@ void readCycle() {
 
 void setup() {
   Serial.begin(115200);
+  loadUid();
   loadDeviceId();
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(MIC_DO_PIN, INPUT);
 
-  Serial.print(F("{\"event\":\"boot_id\",\"id\":\"")); Serial.print(deviceId); Serial.println(F("\"}"));
+  Serial.print(F("{\"event\":\"boot_id\",\"id\":\"")); Serial.print(deviceId);
+  Serial.print(F("\",\"uid\":\"")); Serial.print(deviceUid); Serial.println(F("\"}"));
 
   runBringUp();
   runMicBringUp();

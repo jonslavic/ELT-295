@@ -72,7 +72,7 @@ Troubleshooting table to include (symptom -> likely cause):
 
 ## Connecting to the class (Lab 3)
 INSTRUCTOR one-time setup (before class):
-1. Double-click `Start_Dashboard.bat` (needs Python 3 and `pip install -r server/requirements.txt` once). The dashboard opens in the instructor's browser, and the console prints the student download address, e.g. http://<instructor-ip>:8080/bridge.html.
+1. Double-click `Start_Dashboard.bat` (needs Python 3 and `pip install -r server/requirements.txt` once). The dashboard opens in the instructor's browser, and the console prints the student download address, e.g. http://<instructor-ip>:8000/bridge.html.
 2. Allow Python through Windows Firewall when prompted (choose Private networks). The instructor PC and all student PCs must be on the same network.
 3. Project the dashboard and write the download address on the board.
 Dashboard facts for the instructor guide:

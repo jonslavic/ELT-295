@@ -61,6 +61,8 @@
     flex-shrink: 0;
   }
   .dot.online { background: var(--ok); }
+  .uid { margin-left: auto; font-family: var(--mono); font-size: 0.72rem; font-weight: 400; color: var(--muted);
+    background: #0b1220; border-radius: 4px; padding: 1px 6px; }
   .readings {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -371,7 +373,7 @@ async function poll() {
       if (box) scrolls[e.dataset.key] = box.scrollTop;
     });
     for (const id of Object.keys(accelHist)) {   // drop graphs of boards the server expired
-      if (!devices.some(d => d.id === id)) delete accelHist[id];
+      if (!devices.some(d => d.key === id)) delete accelHist[id];
     }
     grid.innerHTML = devices.map(d => {
       const data = d.data || {};
@@ -415,17 +417,17 @@ async function poll() {
       }
       let accelViz = "";
       if (acc) {
-        if (acc.ok) pushAccel(d.id, acc, data.uptime_ms);
-        accelViz = accelGraphSvg(d.id, acc);
+        if (acc.ok) pushAccel(d.key, acc, data.uptime_ms);
+        accelViz = accelGraphSvg(d.key, acc);
       }
       const i2c = data.i2c_log
-        ? `<details data-key="${esc(d.id)}:i2c">
+        ? `<details data-key="${esc(d.key)}:i2c">
             <summary>I2C messages (this cycle)</summary>
             <div class="i2c-log">${renderI2CLog(data.i2c_log)}</div>
           </details>`
         : "";
       const micPanelHtml = mic
-        ? `<details data-key="${esc(d.id)}:mic">
+        ? `<details data-key="${esc(d.key)}:mic">
             <summary>HW-496 microphone module</summary>
             <div class="i2c-log">${renderMic(mic)}</div>
           </details>`
@@ -433,15 +435,15 @@ async function poll() {
       const ow = ds && !ds.bringup
         ? `<div class="fail" style="font-size:0.85rem">This board is running an older sketch with no bring-up or 1-Wire data. Re-upload TempAlarm_Net.ino from the Arduino IDE.</div>`
         : ds
-        ? `<details data-key="${esc(d.id)}:bringup">
+        ? `<details data-key="${esc(d.key)}:bringup">
             <summary>Bring-up checks</summary>
             <div class="i2c-log">${renderBringUp(ds)}</div>
           </details>
-          <details data-key="${esc(d.id)}:sensor">
+          <details data-key="${esc(d.key)}:sensor">
             <summary>Sensor details (ROM, scratchpad)</summary>
             <div class="i2c-log">${renderSensor(ds)}</div>
           </details>
-          <details data-key="${esc(d.id)}:ow">
+          <details data-key="${esc(d.key)}:ow">
             <summary>1-Wire messages (this cycle)</summary>
             <div class="i2c-log">${renderOwLog(data.ow_log)}</div>
           </details>`
@@ -451,6 +453,7 @@ async function poll() {
           <div class="card-title">
             <span class="dot ${d.online ? "online" : ""}"></span>
             ${esc(d.id)}
+            ${d.uid && d.uid !== d.id ? `<span class="uid" title="Permanent hardware ID of this Uno">${esc(d.uid)}</span>` : ""}
           </div>
           <div class="last-seen">last seen ${d.seconds_since_seen}s ago</div>
           ${viz}${accelViz}

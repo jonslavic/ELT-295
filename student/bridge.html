@@ -72,7 +72,7 @@
 
 <div class="card">
   <label for="serverUrl">Teacher's dashboard server URL</label>
-  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:8080">
+  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:8000">
 
   <div class="status-row">
     <span class="dot" id="connDot"></span>
@@ -334,7 +334,11 @@ function micPanel(m) {
 }
 
 function updateRawPanels(p, line) {
-  let out = p.ds18b20 ? ds18b20Panels(p) : "";
+  let out = `<div class="card"><h2>This board</h2><div class="raw">`
+    + `Name:         ${esc(p.id)}   (change it above; it is saved on the Uno)\n`
+    + `Hardware ID:  ${esc(p.uid || "(older sketch: none)")}   (permanent; the dashboard keeps one card per ID)`
+    + `</div></div>`;
+  out += p.ds18b20 ? ds18b20Panels(p) : "";
   if (p.mic) out += micPanel(p.mic);
   if (p.sht40) out += sht40Panels(p);
   out += `<div class="card"><h2>Raw line from the board</h2><div class="raw">${esc(line)}</div></div>`;
@@ -361,6 +365,12 @@ async function handleLine(line) {
 
   let serverUrl = serverUrlInput.value.trim().replace(/\/+$/, "");
   if (serverUrl && !/^https?:\/\//i.test(serverUrl)) serverUrl = "http://" + serverUrl;
+  // The classroom server is plain http. An https:// address to a LAN IP or localhost can never work.
+  if (/^https:\/\/(\d{1,3}(\.\d{1,3}){3}|localhost)(:|\/|$)/i.test(serverUrl)) {
+    serverUrl = "http://" + serverUrl.slice("https://".length);
+    serverUrlInput.value = serverUrl;
+    log("The server uses http, not https. Changed the address to " + serverUrl + ".", "warn");
+  }
   if (!serverUrl) {
     log("Set the teacher's server URL above to start sending reports.", "warn");
     return;

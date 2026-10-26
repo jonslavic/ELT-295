@@ -9,11 +9,11 @@ their Uno's JSON directly and POST it here. This server just collects
 those reports and serves the live dashboard webpage.
 
 Usage:
-    python server.py [--host 0.0.0.0] [--port 8080]
+    python server.py [--host 0.0.0.0] [--port 8000]
 
 Then, on the teacher's machine, find its LAN IP (Windows: `ipconfig`,
 look for IPv4 Address) and give students that address, e.g.
-    http://192.168.1.42:8080
+    http://192.168.1.42:8000
 as the dashboard URL, and the same address as the "server URL" field
 in bridge.html.
 """
@@ -36,7 +36,7 @@ devices_lock = threading.Lock()
 
 OFFLINE_AFTER_SEC = 6  # if we haven't heard from a board in this long, mark it offline
 EXPIRE_AFTER_SEC = 180  # ...and drop it from the dashboard entirely after this long (--expire-min)
-PUBLIC_URL = "http://localhost:8080"  # address students reach this server at (set in main)
+PUBLIC_URL = "http://localhost:8000"  # address students reach this server at (set in main)
 OTHER_URLS = []     # this PC's other network addresses, in case PUBLIC_URL picked the wrong adapter
 LOCAL_ONLY = False  # True when started with --host 127.0.0.1 (other computers can't connect)
 
@@ -67,9 +67,11 @@ def report():
     if not payload or "id" not in payload:
         return jsonify({"error": "expected JSON body with an 'id' field"}), 400
 
-    dev_id = str(payload["id"])
+    # One card per physical board: key on its permanent hardware ID when the firmware sends one
+    # (so renaming a board updates its card), else fall back to the name (older firmware).
+    dev_key = str(payload.get("uid") or payload["id"])
     with devices_lock:
-        devices[dev_id] = {
+        devices[dev_key] = {
             "last_seen": time.time(),
             "data": payload,
         }
@@ -83,15 +85,17 @@ def api_devices():
     with devices_lock:
         for dev_id in [k for k, e in devices.items() if now - e["last_seen"] > EXPIRE_AFTER_SEC]:
             del devices[dev_id]
-        for dev_id, entry in devices.items():
+        for dev_key, entry in devices.items():
             age = now - entry["last_seen"]
             out.append({
-                "id": dev_id,
+                "key": dev_key,                                   # stable identity (hardware ID)
+                "id": str(entry["data"].get("id", dev_key)),      # display name, may change
+                "uid": entry["data"].get("uid"),
                 "online": age <= OFFLINE_AFTER_SEC,
                 "seconds_since_seen": round(age, 1),
                 "data": entry["data"],
             })
-    out.sort(key=lambda d: d["id"])
+    out.sort(key=lambda d: (d["id"].lower(), d["key"]))
     return jsonify(out)
 
 
@@ -154,7 +158,7 @@ def main():
     global EXPIRE_AFTER_SEC, PUBLIC_URL, OTHER_URLS, LOCAL_ONLY
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--expire-min", type=float, default=EXPIRE_AFTER_SEC / 60,
                         help="remove boards from the dashboard after this many minutes without a report (default 3)")
     parser.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser on start")

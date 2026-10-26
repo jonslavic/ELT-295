@@ -45,7 +45,7 @@ Install in the Arduino IDE (Library Manager, Ctrl+Shift+I):
 ## Connect to the class dashboard
 
 1. Upload `TempAlarm_Net`, then **close the Serial Monitor** (only one program can use the USB port).
-2. Download the bridge from your instructor's address, `http://<teacher-ip>:8080/bridge.html`. It already has that address filled in.
+2. Download the bridge from your instructor's address, `http://<teacher-ip>:8000/bridge.html`. It already has that address filled in.
 3. Double-click the saved file. It must open in **Chrome or Edge** (Firefox and Safari don't support Web Serial).
 4. First time only: click **Connect** and choose your Uno's COM port. After that it reconnects by itself, including when you replug the cable.
 5. Type a name and click **Set name**. It's saved on the board.
