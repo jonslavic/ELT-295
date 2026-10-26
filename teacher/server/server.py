@@ -9,11 +9,11 @@ their Uno's JSON directly and POST it here. This server just collects
 those reports and serves the live dashboard webpage.
 
 Usage:
-    python server.py [--host 0.0.0.0] [--port 5000]
+    python server.py [--host 0.0.0.0] [--port 8080]
 
 Then, on the teacher's machine, find its LAN IP (Windows: `ipconfig`,
 look for IPv4 Address) and give students that address, e.g.
-    http://192.168.1.42:5000
+    http://192.168.1.42:8080
 as the dashboard URL, and the same address as the "server URL" field
 in bridge.html.
 """
@@ -36,7 +36,7 @@ devices_lock = threading.Lock()
 
 OFFLINE_AFTER_SEC = 6  # if we haven't heard from a board in this long, mark it offline
 EXPIRE_AFTER_SEC = 180  # ...and drop it from the dashboard entirely after this long (--expire-min)
-PUBLIC_URL = "http://localhost:5000"  # address students reach this server at (set in main)
+PUBLIC_URL = "http://localhost:8080"  # address students reach this server at (set in main)
 OTHER_URLS = []     # this PC's other network addresses, in case PUBLIC_URL picked the wrong adapter
 LOCAL_ONLY = False  # True when started with --host 127.0.0.1 (other computers can't connect)
 
@@ -136,17 +136,36 @@ def bridge_download():
                     headers={"Content-Disposition": "attachment; filename=ELT295-bridge.html"})
 
 
+def pick_port(host, port, tries=20):
+    # If another program already holds the port, use the next free one instead of failing.
+    for p in range(port, port + tries):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.bind((host, p))
+            return p
+        except OSError:
+            continue
+        finally:
+            s.close()
+    return port  # nothing free nearby: let Flask report the real error
+
+
 def main():
     global EXPIRE_AFTER_SEC, PUBLIC_URL, OTHER_URLS, LOCAL_ONLY
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=5000)
+    parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--expire-min", type=float, default=EXPIRE_AFTER_SEC / 60,
                         help="remove boards from the dashboard after this many minutes without a report (default 3)")
     parser.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser on start")
     args = parser.parse_args()
 
     EXPIRE_AFTER_SEC = args.expire_min * 60
+
+    wanted = args.port
+    args.port = pick_port(args.host, wanted)
+    if args.port != wanted:
+        print(f" Port {wanted} is already in use by another program, so using {args.port} instead.")
 
     LOCAL_ONLY = args.host in ("127.0.0.1", "localhost")
     PUBLIC_URL = f"http://{'localhost' if LOCAL_ONLY else lan_ip()}:{args.port}"

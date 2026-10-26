@@ -72,7 +72,7 @@
 
 <div class="card">
   <label for="serverUrl">Teacher's dashboard server URL</label>
-  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:5000">
+  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:8080">
 
   <div class="status-row">
     <span class="dot" id="connDot"></span>
@@ -140,8 +140,14 @@ if (!("serial" in navigator)) {
 // The teacher's dashboard fills this in when the file is downloaded from it.
 const DEFAULT_SERVER = "__SERVER_URL__";
 try {
-  const saved = localStorage.getItem("serverUrl");
-  serverUrlInput.value = saved || (DEFAULT_SERVER.startsWith("__") ? "" : DEFAULT_SERVER);
+  const baked = DEFAULT_SERVER.startsWith("__") ? "" : DEFAULT_SERVER;
+  // A newly downloaded bridge carries the teacher's current address: it replaces whatever was
+  // remembered from an older download (for example one that used a different port).
+  if (baked && localStorage.getItem("serverUrlBaked") !== baked) {
+    localStorage.setItem("serverUrl", baked);
+    localStorage.setItem("serverUrlBaked", baked);
+  }
+  serverUrlInput.value = localStorage.getItem("serverUrl") || baked;
   serverUrlInput.addEventListener("change", () => localStorage.setItem("serverUrl", serverUrlInput.value.trim()));
 } catch (e) { /* localStorage unavailable: the field just starts empty */ }
 
