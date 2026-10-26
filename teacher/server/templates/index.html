@@ -90,6 +90,17 @@
   .badge { padding: 1px 8px; border-radius: 10px; font-size: 0.8rem; font-weight: 600; background: var(--card-border); }
   .badge.beep { background: #f59e0b; color: #1c1100; }
   .badge.solid { background: var(--off); color: #fff; }
+  .connect { background: var(--card-bg); border: 1px solid var(--card-border); border-left: 4px solid var(--accent);
+    border-radius: 10px; padding: 12px 16px; margin-bottom: 20px; }
+  .connect-main { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .connect-label { color: var(--muted); font-size: 0.9rem; }
+  .connect code { font-family: var(--mono); font-size: 1.25rem; font-weight: 600; color: var(--text); }
+  .connect button { background: var(--card-border); color: var(--text); border: none; border-radius: 6px;
+    padding: 4px 12px; font-size: 0.85rem; cursor: pointer; }
+  .connect-hint { color: var(--muted); font-size: 0.82rem; margin-top: 6px; }
+  .connect-hint a { color: var(--accent); }
+  .connect-hint code { font-size: 0.82rem; font-weight: 400; }
+  .connect-warn { margin-top: 8px; color: #fbbf24; font-size: 0.85rem; }
   .viz { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
   .viz svg { display: block; }
   .viz .gauge { flex: 1; min-width: 0; text-align: center; }
@@ -124,8 +135,19 @@
 <header>
   <h1>&#128225; ELT-295 Classroom IoT Dashboard</h1>
   <div id="summary">Waiting for boards...</div>
-  <a id="bridgeLink" href="/bridge.html" download style="color:var(--accent);font-size:0.85rem">&#11015; Student bridge (download, then double-click)</a>
 </header>
+
+<div id="connect" class="connect">
+  <div class="connect-main">
+    <span class="connect-label">Students connect to</span>
+    <code id="connectUrl">...</code>
+    <button id="copyBtn" type="button">Copy</button>
+  </div>
+  <div class="connect-hint">Type this into the <em>server URL</em> box on the bridge page, or download a bridge that already has it:
+    <a href="/bridge.html" download>&#11015; ELT295-bridge.html</a></div>
+  <div id="connectOthers" class="connect-hint"></div>
+  <div id="connectWarn" class="connect-warn" style="display:none">The server is in local-only mode (started with <code>--host 127.0.0.1</code>), so other computers cannot connect. Restart it with <code>Start_Dashboard.bat</code> and no options.</div>
+</div>
 
 <div id="grid"></div>
 <div id="empty" style="display:none">No boards have reported in yet. Plug in an Uno and connect it from bridge.html.</div>
@@ -448,6 +470,34 @@ async function poll() {
   }
 }
 
+// Show the address students should connect to
+async function loadInfo() {
+  try {
+    const info = await (await fetch("/api/info")).json();
+    document.getElementById("connectUrl").textContent = info.url;
+    if (info.others && info.others.length) {
+      document.getElementById("connectOthers").innerHTML =
+        "Other addresses on this PC (try one if the first is on the wrong network): " +
+        info.others.map(u => `<code>${esc(u)}</code>`).join(", ");
+    }
+    document.getElementById("connectWarn").style.display = info.local_only ? "block" : "none";
+  } catch (e) {
+    document.getElementById("connectUrl").textContent = "(could not read the server address)";
+  }
+}
+
+document.getElementById("copyBtn").addEventListener("click", async () => {
+  const btn = document.getElementById("copyBtn");
+  try {
+    await navigator.clipboard.writeText(document.getElementById("connectUrl").textContent);
+    btn.textContent = "Copied";
+  } catch (e) {
+    btn.textContent = "Select and copy it";
+  }
+  setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+});
+
+loadInfo();
 poll();
 setInterval(poll, 1000);
 </script>

@@ -37,6 +37,8 @@ devices_lock = threading.Lock()
 OFFLINE_AFTER_SEC = 6  # if we haven't heard from a board in this long, mark it offline
 EXPIRE_AFTER_SEC = 180  # ...and drop it from the dashboard entirely after this long (--expire-min)
 PUBLIC_URL = "http://localhost:5000"  # address students reach this server at (set in main)
+OTHER_URLS = []     # this PC's other network addresses, in case PUBLIC_URL picked the wrong adapter
+LOCAL_ONLY = False  # True when started with --host 127.0.0.1 (other computers can't connect)
 
 
 @app.after_request
@@ -46,6 +48,8 @@ def add_cors_headers(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    # Chrome's Private Network Access preflight: a saved bridge.html posting to a LAN address
+    resp.headers["Access-Control-Allow-Private-Network"] = "true"
     return resp
 
 
@@ -103,6 +107,24 @@ def lan_ip():
         s.close()
 
 
+def local_ips():
+    # Every IPv4 address this PC has (WiFi, Ethernet, VPN, virtual adapters), minus loopback/link-local.
+    ips = []
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if not ip.startswith(("127.", "169.254.")) and ip not in ips:
+                ips.append(ip)
+    except OSError:
+        pass
+    return ips
+
+
+@app.route("/api/info")
+def api_info():
+    # What the dashboard banner shows: the address students type into the bridge.
+    return jsonify({"url": PUBLIC_URL, "others": OTHER_URLS, "local_only": LOCAL_ONLY})
+
+
 @app.route("/bridge.html")
 def bridge_download():
     # Hand out the student bridge with this server's address already filled in.
@@ -115,7 +137,7 @@ def bridge_download():
 
 
 def main():
-    global EXPIRE_AFTER_SEC, PUBLIC_URL
+    global EXPIRE_AFTER_SEC, PUBLIC_URL, OTHER_URLS, LOCAL_ONLY
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=5000)
@@ -126,13 +148,20 @@ def main():
 
     EXPIRE_AFTER_SEC = args.expire_min * 60
 
-    local_only = args.host in ("127.0.0.1", "localhost")
-    PUBLIC_URL = f"http://{'localhost' if local_only else lan_ip()}:{args.port}"
+    LOCAL_ONLY = args.host in ("127.0.0.1", "localhost")
+    PUBLIC_URL = f"http://{'localhost' if LOCAL_ONLY else lan_ip()}:{args.port}"
+    if not LOCAL_ONLY:
+        OTHER_URLS = [u for u in (f"http://{ip}:{args.port}" for ip in local_ips()) if u != PUBLIC_URL]
 
     print("=" * 60)
     print(f" Teacher dashboard : http://localhost:{args.port}")
+    print(f" Students connect  : {PUBLIC_URL}")
     print(f" Students download : {PUBLIC_URL}/bridge.html")
     print("   (the file already knows this server's address; they just double-click it)")
+    for u in OTHER_URLS:
+        print(f" Other address     : {u}   (use this if the one above is the wrong network)")
+    if LOCAL_ONLY:
+        print(" NOTE: local-only mode (--host 127.0.0.1): other computers cannot connect.")
     print("=" * 60)
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, args=(f"http://localhost:{args.port}",)).start()

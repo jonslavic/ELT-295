@@ -378,7 +378,7 @@ async function handleLine(line) {
       log(`server rejected report: HTTP ${resp.status}`, "err");
     }
   } catch (e) {
-    log("Could not reach server (" + e.message + "). Check the URL and that you're on the same network.", "err");
+    log("Could not reach " + serverUrl + " (" + e.message + "). Is the dashboard running there, on the same network? Open that address in this browser to test it.", "err");
   }
 }
 </script>
