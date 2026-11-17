@@ -181,7 +181,7 @@ function renderI2CLog(log) {
 // ---------- Visuals ----------
 const T_MIN_F = 50, T_MAX_F = 100;   // thermometer / gauge range
 const accelHist = {};                // device id -> [{x,y,z,t}] (last ACCEL_KEEP samples)
-const ACCEL_KEEP = 60;
+const ACCEL_KEEP = 100;              // 10 s of graph: TempAlarm_Net sends 10 points per second
 
 function tempPct(tF) {
   return Math.max(0, Math.min(1, (tF - T_MIN_F) / (T_MAX_F - T_MIN_F)));
@@ -258,8 +258,15 @@ function pushAccel(id, acc, uptime) {
   const h = accelHist[id] || (accelHist[id] = []);
   const last = h[h.length - 1];
   if (last && last.t === uptime) return;   // same report seen twice
-  h.push({ x: acc.x_g, y: acc.y_g, z: acc.z_g, t: uptime });
-  if (h.length > ACCEL_KEEP) h.shift();
+  if (Array.isArray(acc.hist) && acc.hist.length) {
+    // Several points per report (X/Y/Z in mg, hist_ms apart, the last one newest)
+    const n = acc.hist.length, step = acc.hist_ms || 100;
+    acc.hist.forEach((p, i) => h.push({ x: p[0] / 1000, y: p[1] / 1000, z: p[2] / 1000,
+                                         t: i === n - 1 ? uptime : uptime - (n - 1 - i) * step }));
+  } else {
+    h.push({ x: acc.x_g, y: acc.y_g, z: acc.z_g, t: uptime });   // older firmware: one point
+  }
+  while (h.length > ACCEL_KEEP) h.shift();
 }
 
 function accelGraphSvg(id, acc) {
@@ -279,7 +286,25 @@ function accelGraphSvg(id, acc) {
       <span style="color:#f87171">X ${acc.ok ? fmt(acc.x_g, 2) : "--"} g</span>
       <span style="color:#4ade80">Y ${acc.ok ? fmt(acc.y_g, 2) : "--"} g</span>
       <span style="color:#60a5fa">Z ${acc.ok ? fmt(acc.z_g, 2) : "--"} g</span>
+      ${acc.max_g !== undefined ? `<span title="largest |a| in the last second">max ${fmt(acc.max_g, 2)} g</span>` : ""}
     </div></div>`;
+}
+
+// Grove LIS3DHTR bring-up and raw registers (TempAlarm_Net)
+function renderAccel(acc) {
+  const b = acc.bringup || {};
+  let out = checkRow(`Bus scan: device answers at ${esc(acc.addr || "0x18/0x19")}`, b.found);
+  if (!b.found) return out + `<div style="margin-top:6px;color:var(--muted)">Check SDA &rarr; A4, SCL &rarr; A5, VCC &rarr; 5V, GND. The board retries every 3 s.</div>`;
+  out += checkRow(`WHO_AM_I = 0x33 (read ${byteHex(acc.who_am_i || 0)})`, b.who_ok)
+    + checkRow("Config written and read back (100 Hz, +/-2 g, 12-bit)", b.cfg_ok)
+    + checkRow("Reads about 1 g while still", b.one_g)
+    + checkRow("Moved: peak above 1.5 g (shake or tap it)", b.moved);
+  if (acc.ok) {
+    out += `<div style="margin-top:6px">X ${fmt(acc.x_g, 3)} g, Y ${fmt(acc.y_g, 3)} g, Z ${fmt(acc.z_g, 3)} g</div>`
+      + `<div>|a| now ${fmt(acc.mag_g, 3)} g; last second ${fmt(acc.min_g, 2)} to ${fmt(acc.max_g, 2)} g; peak since boot ${fmt(acc.peak_g, 2)} g</div>`;
+    if (acc.raw) out += `<div>Raw OUT_X_L..OUT_Z_H: ${acc.raw.map(byteHex).join(" ")}</div>`;
+  }
+  return out;
 }
 
 // HW-496 sound level as a small meter plus the loudest swing seen since boot
@@ -398,6 +423,11 @@ async function poll() {
         rows += `<div class="label">Thresholds</div><div class="value">${fmt(alarm.beep_on_f, 0)} / ${fmt(alarm.solid_on_f, 0)} &deg;F</div>`;
       }
 
+      if (acc && acc.bringup) {
+        rows += `<div class="label">Motion</div><div class="value">${!acc.bringup.found ? "<span class='fail'>no accelerometer</span>"
+          : acc.ok ? `${fmt(acc.max_g, 2)} g <span style="color:var(--muted);font-size:0.8rem">(peak ${fmt(acc.peak_g, 2)})</span>` : "--"}</div>`;
+      }
+
       const mic = data.mic;
       if (mic) {
         rows += `<div class="label">Sound</div><div class="value">${micMeter(mic)}</div>`;
@@ -416,10 +446,16 @@ async function poll() {
           </div>`;
       }
       let accelViz = "";
-      if (acc) {
+      if (acc && !(acc.bringup && !acc.bringup.found)) {   // no graph while the sensor is missing
         if (acc.ok) pushAccel(d.key, acc, data.uptime_ms);
         accelViz = accelGraphSvg(d.key, acc);
       }
+      const accelPanelHtml = acc && acc.bringup
+        ? `<details data-key="${esc(d.key)}:accel">
+            <summary>LIS3DHTR accelerometer</summary>
+            <div class="i2c-log">${renderAccel(acc)}</div>
+          </details>`
+        : "";
       const i2c = data.i2c_log
         ? `<details data-key="${esc(d.key)}:i2c">
             <summary>I2C messages (this cycle)</summary>
@@ -458,7 +494,7 @@ async function poll() {
           <div class="last-seen">last seen ${d.seconds_since_seen}s ago</div>
           ${viz}${accelViz}
           <div class="readings">${rows}</div>
-          ${i2c}${ow}${micPanelHtml}
+          ${ow}${micPanelHtml}${accelPanelHtml}${i2c}
         </div>`;
     }).join("");
     grid.querySelectorAll("details[data-key]").forEach(e => {

@@ -333,6 +333,37 @@ function micPanel(m) {
     + `</div></div>`;
 }
 
+// Grove LIS3DHTR on TempAlarm_Net: bring-up, live X/Y/Z and the I2C bytes behind them
+function accelPanels(a, i2cLog) {
+  const b = a.bringup || {};
+  let out = `<div class="card"><h2>Accelerometer (LIS3DHTR): raw data</h2><div class="raw">`
+    + checkRow(`Bus scan: device answers at ${esc(a.addr || "0x18/0x19")}`, b.found)
+    + (b.found ? checkRow(`WHO_AM_I = 0x33 (read ${hx(a.who_am_i || 0)})`, b.who_ok)
+      + checkRow("Config written and read back (CTRL_REG1 0x57, CTRL_REG4 0x88)", b.cfg_ok)
+      + checkRow("Reads about 1 g while still", b.one_g)
+      + checkRow("Moved: peak above 1.5 g (shake or tap the board)", b.moved) : "");
+  if (!b.found) {
+    out += `\nNothing answered on I2C. Check SDA -> A4, SCL -> A5, VCC -> 5V, GND -> GND. Retries every 3 s.`;
+  } else if (a.ok) {
+    const r = a.raw || [];
+    const reg = i => r.length ? `${hx(r[2 * i + 1])} ${hx(r[2 * i])}` : "--";
+    const val = i => r.length ? (((r[2 * i + 1] << 8 | r[2 * i]) << 16 >> 16) >> 4) : 0;
+    out += `\nRegisters (H L)    raw >> 4 = mg     g\n`
+      + ["X", "Y", "Z"].map((n, i) => `${n}: ${reg(i)}       ${String(val(i)).padStart(6)} mg   ${Number(a[n.toLowerCase() + "_g"]).toFixed(3)} g`).join("\n")
+      + `\n|a| = sqrt(X^2 + Y^2 + Z^2) = ${Number(a.mag_g).toFixed(3)} g   (about 1.000 g when still)`
+      + `\nLast second: |a| from ${Number(a.min_g).toFixed(3)} to ${Number(a.max_g).toFixed(3)} g   (50 reads)`
+      + `\nPeak since boot: ${Number(a.peak_g).toFixed(3)} g`
+      + `\n\n<span class="cmd">Tilt the board slowly: gravity moves between X, Y and Z. Then tap it: the max jumps even if the graph points miss it.</span>`;
+  }
+  out += `</div></div>`;
+  const log = i2cLog || [];
+  out += `<div class="card"><h2>I2C bus traffic (first read this second)</h2><div class="raw">`
+    + (log.length ? log.map(m => `<span class="${m.op === "W" ? "w" : "r"}">${m.op === "W" ? "WRITE" : "READ "} ${esc(m.addr)}  [${(m.bytes || []).map(hx).join(" ")}]</span>${m.op === "W" && m.bytes && m.bytes[0] === 0xA8 ? `  <span class="cmd">OUT_X_L (0x28) + auto-increment (0x80)</span>` : ""}`).join("\n")
+                  : `<span class="cmd">(none this second)</span>`)
+    + `</div></div>`;
+  return out;
+}
+
 function updateRawPanels(p, line) {
   let out = `<div class="card"><h2>This board</h2><div class="raw">`
     + `Name:         ${esc(p.id)}   (change it above; it is saved on the Uno)\n`
@@ -340,6 +371,7 @@ function updateRawPanels(p, line) {
     + `</div></div>`;
   out += p.ds18b20 ? ds18b20Panels(p) : "";
   if (p.mic) out += micPanel(p.mic);
+  if (p.accel && !p.sht40) out += accelPanels(p.accel, p.i2c_log);   // SHT40 boards show theirs below
   if (p.sht40) out += sht40Panels(p);
   out += `<div class="card"><h2>Raw line from the board</h2><div class="raw">${esc(line)}</div></div>`;
   document.getElementById("rawPanels").innerHTML = out;

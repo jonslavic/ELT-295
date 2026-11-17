@@ -31,7 +31,7 @@ To use your own board too, run a bridge tab on your PC. Download it from `http:/
 
 - One card per board: thermometer and gauge (°F with °C below, alarm thresholds as colored zones), a speaker icon (silent / beeping / solid), a sound meter, and bring-up PASS/FAIL.
 - Expandable panels per board: bring-up checks, sensor details (ROM, labeled scratchpad), 1-Wire messages, and the microphone.
-- A live XYZ graph for any board that reports accelerometer data.
+- A live X/Y/Z accelerometer graph (last 10 seconds, 10 points per second) with the largest jolt each second, a Motion row (peak g), and an expandable LIS3DHTR panel with its bring-up checks and raw registers. A board without the accelerometer shows "no accelerometer".
 - A board that stops reporting greys out after about 6 seconds and is removed after 3 minutes.
 
 ## Options

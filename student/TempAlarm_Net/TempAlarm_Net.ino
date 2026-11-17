@@ -1,5 +1,6 @@
 // ELT295 Lab - Networked temperature alarm with 1-Wire bring-up:
-//              HW-506 (DS18B20) + HW-508 passive buzzer
+//              HW-506 (DS18B20) + HW-508 passive buzzer + HW-496 microphone
+//              + Grove LIS3DHTR 3-axis accelerometer (I2C)
 //
 // Same alarm behavior as TempAlarm, but the DS18B20 is driven directly over 1-Wire
 // so every bus transaction can be shown to the student. One JSON line per second
@@ -27,6 +28,8 @@
 //   HW-506 VCC -> 5V, GND -> GND, signal -> D2
 //   HW-508 S   -> D9, - -> GND, middle pin not connected (no VCC pin)
 //   HW-496 microphone module: VCC -> 5V, GND -> GND, AO -> A0, DO -> D3
+//   Grove LIS3DHTR (Grove cable): VCC (red) -> 5V, GND (black) -> GND,
+//                                 SDA (white) -> A4, SCL (yellow) -> A5
 //   Exactly one DS18B20 on the bus (commands use Skip ROM 0xCC).
 //
 // HW-496: electret microphone + amplifier. AO is an audio waveform riding on a DC bias
@@ -36,10 +39,20 @@
 //   blue pot (the sketch counts the flips). "Responds" turns PASS once the peak-to-peak
 //   has hit 100+ counts (clap near the mic); "DO works" once DO has changed state.
 //
-// Library: OneWire (Paul Stoffregen)
+// LIS3DHTR: 3-axis accelerometer on I2C (address 0x19, or 0x18 if its SDO pin is tied low),
+//   driven register by register with Wire so the I2C traffic can be shown to the student.
+//   Set to +/-2 g, high-resolution (12-bit), 1 mg per count. A single reading per second only
+//   shows tilt; taps and shakes last tens of ms. So the loop reads it 50x per second: every
+//   report carries 10 points for the graph (one every 100 ms) plus the smallest and largest
+//   |a| seen in that second, so a tap between graph points still shows up.
+//   Bring-up: bus scan, WHO_AM_I (must read 0x33), config written and read back, and a
+//   functional check (|a| about 1 g while still). Shake it once to pass "moved".
+//
+// Library: OneWire (Paul Stoffregen). Wire and EEPROM come with the Arduino IDE.
 
 #include <OneWire.h>
 #include <EEPROM.h>
+#include <Wire.h>
 
 const int ONE_WIRE_PIN = 2;
 const int BUZZER_PIN   = 9;
@@ -54,6 +67,20 @@ const int           TONE_HZ = 2000;
 const unsigned long BEEP_MS = 250;   // beep on / off time
 const unsigned long READ_MS = 1000;  // read + report interval (conversion takes <= 750 ms)
 const unsigned long RETRY_MS = 3000; // re-run bring-up this often while failing
+
+// LIS3DHTR registers
+const uint8_t LIS_ADDRS[2] = { 0x19, 0x18 };  // Grove default 0x19; 0x18 if SDO is tied low
+#define LIS_WHO_AM_I   0x0F    // reads 0x33 on a LIS3DH
+#define LIS_CTRL_REG1  0x20
+#define LIS_CTRL_REG4  0x23
+#define LIS_OUT_X_L    0x28    // X_L, X_H, Y_L, Y_H, Z_L, Z_H follow in order
+#define LIS_AUTO_INC   0x80    // set on the register address to read several in a row
+#define LIS_CFG1       0x57    // 100 Hz output rate, X/Y/Z enabled
+#define LIS_CFG4       0x88    // block data update, +/-2 g, high-resolution (1 mg per count)
+
+const unsigned long ACCEL_SAMPLE_MS = 20;   // read the accelerometer 50x per second
+const uint8_t       ACCEL_HIST_EVERY = 5;   // keep every 5th read for the graph (10 points/s)
+#define ACCEL_HIST_MAX 10
 
 // DS18B20 commands
 #define OW_SKIP_ROM      0xCC
@@ -119,6 +146,176 @@ bool     micDo = false;          // comparator output level
 bool     micDoSeen = false;      // DO has changed state at least once since boot
 uint16_t micDoEdges = 0;         // DO changes since boot
 bool     micInRange = false;     // bias is not stuck at a rail
+
+// ---------- LIS3DHTR accelerometer (I2C) ----------
+uint8_t  accAddr = 0;                 // 0 = not found on the bus
+uint8_t  accWho = 0;                  // WHO_AM_I value read in bring-up
+bool     accOk = false;               // last read succeeded
+int16_t  accMg[3];                    // latest X, Y, Z in mg (1000 mg = 1 g)
+uint8_t  accRaw[6];                   // latest raw output registers
+int16_t  accHist[ACCEL_HIST_MAX][3];  // graph points this second
+uint8_t  accHistN = 0;
+uint8_t  accReadCount = 0;
+uint16_t accWinMin = 0xFFFF, accWinMax = 0;  // smallest / largest |a| this second (mg)
+uint16_t accPeak = 0;                 // largest |a| since boot (shake test)
+unsigned long lastAccelRead = 0, lastAccelBringUp = 0;
+
+struct AccelBringUp {
+  bool found, whoOk, cfgOk, oneG, moved, pass;
+} abu;
+
+// I2C transaction log (the first accelerometer read of each report window)
+struct I2cMsg {
+  char    op;        // 'W' = write, 'R' = read
+  uint8_t addr;
+  uint8_t len;
+  uint8_t data[6];
+};
+#define I2C_LOG_MAX 2
+I2cMsg  i2cLog[I2C_LOG_MAX];
+uint8_t i2cLogCount = 0;
+bool    i2cLogging = false;
+
+void logI2c(char op, uint8_t addr, const uint8_t *data, uint8_t len) {
+  if (!i2cLogging || i2cLogCount >= I2C_LOG_MAX) return;
+  I2cMsg &m = i2cLog[i2cLogCount++];
+  m.op = op;
+  m.addr = addr;
+  m.len = len > 6 ? 6 : len;
+  memcpy(m.data, data, m.len);
+}
+
+bool accWriteReg(uint8_t reg, uint8_t val) {
+  Wire.beginTransmission(accAddr);
+  Wire.write(reg);
+  Wire.write(val);
+  uint8_t out[2] = { reg, val };
+  logI2c('W', accAddr, out, 2);
+  return Wire.endTransmission() == 0;
+}
+
+bool accReadRegs(uint8_t reg, uint8_t *buf, uint8_t len) {
+  uint8_t sub = len > 1 ? (reg | LIS_AUTO_INC) : reg;
+  Wire.beginTransmission(accAddr);
+  Wire.write(sub);
+  logI2c('W', accAddr, &sub, 1);
+  if (Wire.endTransmission(false) != 0) return false;     // repeated start, then read
+  if (Wire.requestFrom(accAddr, len) != len) return false;
+  for (uint8_t i = 0; i < len; i++) buf[i] = Wire.read();
+  logI2c('R', accAddr, buf, len);
+  return true;
+}
+
+uint16_t accMagMg() {   // |a| = sqrt(x^2 + y^2 + z^2), in mg
+  float x = accMg[0], y = accMg[1], z = accMg[2];
+  return (uint16_t)sqrt(x * x + y * y + z * z);
+}
+
+bool readAccel() {
+  if (!accAddr || !accReadRegs(LIS_OUT_X_L, accRaw, 6)) { accOk = false; return false; }
+  for (uint8_t i = 0; i < 3; i++) {
+    // 12-bit value, left-justified in 16 bits: shift right 4 -> 1 mg per count at +/-2 g
+    accMg[i] = ((int16_t)((accRaw[2 * i + 1] << 8) | accRaw[2 * i])) >> 4;
+  }
+  accOk = true;
+  i2cLogging = false;   // log only the first read of each report window
+  return true;
+}
+
+// Called from loop(): one read every ACCEL_SAMPLE_MS
+void accelTick(unsigned long now) {
+  if (!accAddr || now - lastAccelRead < ACCEL_SAMPLE_MS) return;
+  lastAccelRead = now;
+  if (!readAccel()) return;
+  uint16_t m = accMagMg();
+  if (m < accWinMin) accWinMin = m;
+  if (m > accWinMax) accWinMax = m;
+  if (m > accPeak) accPeak = m;
+  if (accPeak >= 1500) abu.moved = true;          // shaken or tapped: 1.5 g or more
+  if (++accReadCount >= ACCEL_HIST_EVERY) {
+    accReadCount = 0;
+    if (accHistN < ACCEL_HIST_MAX) memcpy(accHist[accHistN++], accMg, sizeof(accMg));
+  }
+}
+
+// Close the report window: a still second (all of it 0.8..1.2 g) proves the sensor reads 1 g
+void accelCloseWindow() {
+  if (accWinMax > 0 && accWinMin >= 800 && accWinMax <= 1200) abu.oneG = true;
+  abu.pass = abu.found && abu.whoOk && abu.cfgOk && abu.oneG;
+}
+
+void accelResetWindow() {
+  accHistN = 0;
+  accWinMin = 0xFFFF;
+  accWinMax = 0;
+  i2cLogCount = 0;
+  i2cLogging = true;
+}
+
+void printHexByte(uint8_t b);
+
+bool runAccelBringUp() {
+  Serial.println(F("---- LIS3DHTR ACCELEROMETER (I2C) ----"));
+  bool moved = abu.moved;
+  memset(&abu, 0, sizeof(abu));
+  abu.moved = moved;
+  i2cLogging = false;
+
+  // Bus scan: who ACKs at the two addresses a LIS3DH can have?
+  accAddr = 0;
+  for (uint8_t i = 0; i < 2 && !accAddr; i++) {
+    Wire.beginTransmission(LIS_ADDRS[i]);
+    if (Wire.endTransmission() == 0) accAddr = LIS_ADDRS[i];
+  }
+  abu.found = accAddr != 0;
+  Serial.print(F("  bus scan: "));
+  if (!abu.found) {
+    accOk = false;
+    Serial.println(F("nothing at 0x18 or 0x19 [FAIL]"));
+    Serial.println(F("         check: SDA -> A4, SCL -> A5, VCC -> 5V, GND -> GND (Grove cable fully seated)."));
+    Serial.println(F("(will automatically retry in 3 seconds)"));
+    Serial.println();
+    return false;
+  }
+  Serial.print(F("device at 0x")); printHexByte(accAddr); Serial.println(F(" [PASS]"));
+
+  // Identification
+  accWho = 0;
+  accReadRegs(LIS_WHO_AM_I, &accWho, 1);
+  abu.whoOk = accWho == 0x33;
+  Serial.print(F("  WHO_AM_I: 0x")); printHexByte(accWho);
+  Serial.println(abu.whoOk ? F(" = LIS3DH [PASS]") : F(" [FAIL] (expected 0x33: a different chip at this address?)"));
+
+  // Configure, then read the settings back
+  accWriteReg(LIS_CTRL_REG1, LIS_CFG1);
+  accWriteReg(LIS_CTRL_REG4, LIS_CFG4);
+  uint8_t r1 = 0, r4 = 0;
+  accReadRegs(LIS_CTRL_REG1, &r1, 1);
+  accReadRegs(LIS_CTRL_REG4, &r4, 1);
+  abu.cfgOk = r1 == LIS_CFG1 && r4 == LIS_CFG4;
+  Serial.print(F("  config: CTRL_REG1=0x")); printHexByte(r1);
+  Serial.print(F(" CTRL_REG4=0x")); printHexByte(r4);
+  Serial.println(abu.cfgOk ? F(" (100 Hz, +/-2 g, 12-bit) [PASS]") : F(" [FAIL] (did not read back what was written)"));
+
+  // Functional: lying still, |a| should be about 1 g (gravity)
+  delay(30);   // first samples at the new rate
+  if (readAccel()) {
+    uint16_t m = accMagMg();
+    abu.oneG = m >= 800 && m <= 1200;
+    Serial.print(F("  reading: X ")); Serial.print(accMg[0]);
+    Serial.print(F(" Y ")); Serial.print(accMg[1]);
+    Serial.print(F(" Z ")); Serial.print(accMg[2]);
+    Serial.print(F(" mg, |a| ")); Serial.print(m); Serial.print(F(" mg -> "));
+    Serial.println(abu.oneG ? F("[PASS] about 1 g, as expected at rest")
+                            : F("[CHECK] not about 1 g: hold the board still (passes on its own when it is)"));
+  } else {
+    Serial.println(F("  reading: [FAIL] the read did not complete"));
+  }
+  Serial.println(F("  functional test: shake or tap the board; the peak must go above 1.5 g."));
+  Serial.println();
+  abu.pass = abu.found && abu.whoOk && abu.cfgOk && abu.oneG;
+  return abu.found && abu.whoOk && abu.cfgOk;
+}
 
 void sampleMic() {
   int v = analogRead(MIC_AO_PIN);
@@ -358,8 +555,10 @@ bool runBringUp() {
 // Read this board's permanent ID from EEPROM, creating it the first time the board runs this sketch
 void loadUid() {
   if (EEPROM.read(EEPROM_UID_ADDR) != EEPROM_UID_MAGIC) {
-    // Noise from two floating analog pins plus the boot-time timer: different on every board
-    randomSeed(((uint32_t)analogRead(A5) << 16) ^ ((uint32_t)analogRead(A4) << 8) ^ micros());
+    // Noise from floating analog pins plus the boot-time timer: different on every board
+    // (A4/A5 are the accelerometer's I2C lines, held high by pull-ups, so they add nothing)
+    randomSeed(((uint32_t)analogRead(A1) << 20) ^ ((uint32_t)analogRead(A2) << 10)
+               ^ analogRead(A3) ^ micros());
     for (uint8_t i = 0; i < 4; i++) EEPROM.update(EEPROM_UID_ADDR + 1 + i, random(0, 256));
     EEPROM.update(EEPROM_UID_ADDR, EEPROM_UID_MAGIC);   // magic last: a half-written ID is redone
   }
@@ -470,6 +669,50 @@ void sendReport(bool presence, bool crcOk, bool ok) {
   Serial.print(F(",\"pass\":"));             printBool(micInRange);
   Serial.print(F("}}"));
 
+  Serial.print(F(",\"accel\":{\"ok\":"));  printBool(accOk);
+  if (accAddr) { Serial.print(F(",\"addr\":\"0x")); printHexByte(accAddr); Serial.print('"'); }
+  Serial.print(F(",\"who_am_i\":"));      Serial.print(accWho);
+  if (accOk) {
+    Serial.print(F(",\"x_g\":"));   Serial.print(accMg[0] / 1000.0f, 3);
+    Serial.print(F(",\"y_g\":"));   Serial.print(accMg[1] / 1000.0f, 3);
+    Serial.print(F(",\"z_g\":"));   Serial.print(accMg[2] / 1000.0f, 3);
+    Serial.print(F(",\"mag_g\":")); Serial.print(accMagMg() / 1000.0f, 3);
+    Serial.print(F(",\"raw\":["));
+    for (uint8_t i = 0; i < 6; i++) { if (i) Serial.print(','); Serial.print(accRaw[i]); }
+    Serial.print(']');
+  }
+  if (accWinMax > 0) {
+    Serial.print(F(",\"min_g\":")); Serial.print(accWinMin / 1000.0f, 3);
+    Serial.print(F(",\"max_g\":")); Serial.print(accWinMax / 1000.0f, 3);
+  }
+  Serial.print(F(",\"peak_g\":"));  Serial.print(accPeak / 1000.0f, 3);
+  Serial.print(F(",\"hist_ms\":")); Serial.print(ACCEL_SAMPLE_MS * ACCEL_HIST_EVERY);
+  Serial.print(F(",\"hist\":["));    // graph points this second, X/Y/Z in mg
+  for (uint8_t i = 0; i < accHistN; i++) {
+    if (i) Serial.print(',');
+    Serial.print('['); Serial.print(accHist[i][0]); Serial.print(',');
+    Serial.print(accHist[i][1]); Serial.print(','); Serial.print(accHist[i][2]); Serial.print(']');
+  }
+  Serial.print(F("],\"bringup\":{\"found\":")); printBool(abu.found);
+  Serial.print(F(",\"who_ok\":"));   printBool(abu.whoOk);
+  Serial.print(F(",\"cfg_ok\":"));   printBool(abu.cfgOk);
+  Serial.print(F(",\"one_g\":"));    printBool(abu.oneG);
+  Serial.print(F(",\"moved\":"));    printBool(abu.moved);
+  Serial.print(F(",\"pass\":"));     printBool(abu.pass);
+  Serial.print(F("}}"));
+
+  Serial.print(F(",\"i2c_log\":["));
+  for (uint8_t i = 0; i < i2cLogCount; i++) {
+    if (i) Serial.print(',');
+    I2cMsg &m = i2cLog[i];
+    Serial.print(F("{\"op\":\"")); Serial.print(m.op);
+    Serial.print(F("\",\"addr\":\"0x")); printHexByte(m.addr);
+    Serial.print(F("\",\"bytes\":["));
+    for (uint8_t j = 0; j < m.len; j++) { if (j) Serial.print(','); Serial.print(m.data[j]); }
+    Serial.print(F("]}"));
+  }
+  Serial.print(']');
+
   Serial.print(F(",\"alarm\":{\"state\":\"")); Serial.print(stateName(state));
   Serial.print(F("\",\"beep_on_f\":"));  Serial.print(BEEP_ON_F, 1);
   Serial.print(F(",\"solid_on_f\":"));   Serial.print(SOLID_ON_F, 1);
@@ -507,12 +750,14 @@ void readCycle() {
 
   owCommand(OW_CONVERT_T);  // start the next conversion
   micCloseWindow();         // this second's sound numbers
+  accelCloseWindow();       // this second's motion numbers
 
   if (ok) state = nextState(state, tempC() * 9.0f / 5.0f + 32.0f);
   else    state = ALARM_OFF;
 
   lastReadOk = ok;
   sendReport(presence, crcOk, ok);
+  accelResetWindow();
 }
 
 // ================= Arduino entry points =================
@@ -524,20 +769,27 @@ void setup() {
   pinMode(BUZZER_PIN, OUTPUT);
   pinMode(LED_BUILTIN, OUTPUT);
   pinMode(MIC_DO_PIN, INPUT);
+  Wire.begin();
+#if defined(WIRE_HAS_TIMEOUT) || defined(ARDUINO_ARCH_AVR)   // AVR core 1.8.3+ has it
+  Wire.setWireTimeout(3000, true);  // a bad I2C connection can't hang the sketch
+#endif
 
   Serial.print(F("{\"event\":\"boot_id\",\"id\":\"")); Serial.print(deviceId);
   Serial.print(F("\",\"uid\":\"")); Serial.print(deviceUid); Serial.println(F("\"}"));
 
   runBringUp();
   runMicBringUp();
+  runAccelBringUp();
+  accelResetWindow();
   owCommand(OW_CONVERT_T);          // first conversion for the first report
-  lastBringUp = lastRead = millis();
+  lastBringUp = lastRead = lastAccelBringUp = millis();
 }
 
 void loop() {
   handleSerialCommands();
   sampleMic();                 // keep the microphone window filling between reports
   unsigned long now = millis();
+  accelTick(now);              // 50 accelerometer reads per second
 
   if (now - lastRead >= READ_MS) {
     lastRead = now;
@@ -549,6 +801,12 @@ void loop() {
     runBringUp();
     owCommand(OW_CONVERT_T);
     lastBringUp = lastRead = millis();
+  }
+
+  // Same for the accelerometer: not found, or reads failing (cable pulled) -> try again
+  if ((!accAddr || !accOk || !abu.cfgOk) && now - lastAccelBringUp >= RETRY_MS) {
+    runAccelBringUp();
+    lastAccelBringUp = millis();
   }
 
   digitalWrite(LED_BUILTIN, lastReadOk ? HIGH : LOW);  // solid = sensor healthy
