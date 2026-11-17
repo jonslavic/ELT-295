@@ -93,6 +93,13 @@
   </div>
 </div>
 
+<div class="card" id="tiltCard" style="display:none">
+  <h2>Tilt (live, 10 per second)</h2>
+  <div id="tiltView" style="display:flex;align-items:center;gap:14px"></div>
+  <div class="cmd" style="font-size:0.8rem;margin-top:6px">Tilt the board: the arrow pointing up is the axis reading +1 g.
+    Turning it flat on the table (yaw) doesn't show: gravity doesn't change, so an accelerometer can't sense it.</div>
+</div>
+
 <div id="rawPanels"></div>
 
 <div class="card">
@@ -378,6 +385,124 @@ function updateRawPanels(p, line) {
   document.getElementById("rawPanels").innerHTML = out;
 }
 
+// ---------- Live tilt (TempAlarm_Net sends {"tilt":[x,y,z]} in centi-g, 10 per second) ----------
+// Same 3D drawing as the teacher's dashboard.
+// Raise the X end -> pitch goes positive; raise the Y end -> roll goes positive
+function tiltAngles([x, y, z]) {
+  return { roll: Math.atan2(y, z) * 180 / Math.PI,
+           pitch: Math.atan2(x, Math.hypot(y, z)) * 180 / Math.PI };
+}
+
+function tiltSvg(g) {
+  // Rotation taking the measured "up" (g, normalized) onto world up (0,0,1): Rodrigues formula
+  const n = Math.hypot(...g) || 1;
+  const u = g.map(v => v / n);
+  const ax = [u[1], -u[0], 0];                         // u x (0,0,1)
+  const s = Math.hypot(ax[0], ax[1]), c = u[2];
+  const k = s > 1e-6 ? ax.map(v => v / s) : [1, 0, 0];
+  const ang = s > 1e-6 ? Math.atan2(s, c) : (c > 0 ? 0 : Math.PI);
+  const cs = Math.cos(ang), sn = Math.sin(ang), t1 = 1 - cs;
+  const rot = ([px, py, pz]) => {
+    const d = k[0] * px + k[1] * py + k[2] * pz;
+    const cx = k[1] * pz - k[2] * py, cy = k[2] * px - k[0] * pz, cz = k[0] * py - k[1] * px;
+    return [px * cs + cx * sn + k[0] * d * t1, py * cs + cy * sn + k[1] * d * t1, pz * cs + cz * sn + k[2] * d * t1];
+  };
+  // Fixed camera: turned 35 degrees, looking 25 degrees down. Returns [screenX, screenY, depth]
+  const az = -35 * Math.PI / 180, el = 25 * Math.PI / 180, S = 26, CX = 60, CY = 58;
+  const view = ([px, py, pz]) => {
+    const x1 = px * Math.cos(az) - py * Math.sin(az), y1 = px * Math.sin(az) + py * Math.cos(az);
+    // looking down: far points (+y) sit higher on screen; depth grows away from the camera
+    const y2 = y1 * Math.cos(el) - pz * Math.sin(el), z2 = y1 * Math.sin(el) + pz * Math.cos(el);
+    return [CX + S * x1, CY - S * z2, y2];
+  };
+  const P = p => view(rot(p));
+
+  // The board: a flat box 2.0 x 1.4 x 0.16, sensor axes as on the chip
+  const bx = 1.0, by = 0.7, bz = 0.08;
+  const faces = [
+    { n: [0, 0, 1],  c: "#0e7490", v: [[-bx, -by, bz], [bx, -by, bz], [bx, by, bz], [-bx, by, bz]] },   // top
+    { n: [0, 0, -1], c: "#164e63", v: [[-bx, -by, -bz], [-bx, by, -bz], [bx, by, -bz], [bx, -by, -bz]] },
+    { n: [1, 0, 0],  c: "#155e75", v: [[bx, -by, -bz], [bx, by, -bz], [bx, by, bz], [bx, -by, bz]] },
+    { n: [-1, 0, 0], c: "#155e75", v: [[-bx, -by, -bz], [-bx, -by, bz], [-bx, by, bz], [-bx, by, -bz]] },
+    { n: [0, 1, 0],  c: "#0f5f73", v: [[-bx, by, -bz], [-bx, by, bz], [bx, by, bz], [bx, by, -bz]] },
+    { n: [0, -1, 0], c: "#0f5f73", v: [[-bx, -by, -bz], [bx, -by, -bz], [bx, -by, bz], [-bx, -by, bz]] },
+  ];
+  let body = "";
+  for (const f of faces) {
+    const nz = view(rot(f.n))[2] - view([0, 0, 0])[2];   // facing the camera if it points toward -depth
+    if (nz >= 0) continue;
+    body += `<polygon points="${f.v.map(p => P(p).slice(0, 2).map(v => v.toFixed(1)).join(",")).join(" ")}" fill="${f.c}" stroke="#67e8f9" stroke-width="0.6"/>`;
+  }
+  // Chip on the top face, so the board's top is obvious
+  const chip = [[-0.22, -0.22, bz], [0.22, -0.22, bz], [0.22, 0.22, bz], [-0.22, 0.22, bz]];
+  if (view(rot([0, 0, 1]))[2] - view([0, 0, 0])[2] < 0) {
+    body += `<polygon points="${chip.map(p => P(p).slice(0, 2).map(v => v.toFixed(1)).join(",")).join(" ")}" fill="#111827"/>`;
+  }
+  const arrow = (dir, color, label) => {
+    const [x0, y0] = P([0, 0, 0]), [x1, y1] = P(dir.map(v => v * 1.55)), [xl, yl] = P(dir.map(v => v * 1.85));
+    return `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${color}" stroke-width="2" marker-end="url(#ah-${label})"/>
+      <text x="${xl.toFixed(1)}" y="${(yl + 3).toFixed(1)}" fill="${color}" font-size="9" font-weight="700" text-anchor="middle">${label}</text>`;
+  };
+  const marker = (label, color) => `<marker id="ah-${label}" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="${color}"/></marker>`;
+  // World "down" (gravity) stays fixed on screen
+  const [gx0, gy0] = view([1.55, -1.1, 0.6]), [gx1, gy1] = view([1.55, -1.1, -0.2]);
+  return `<svg viewBox="0 0 120 112" width="120" height="112" aria-label="3D tilt of the accelerometer">
+    <defs>${marker("X", "#f87171")}${marker("Y", "#4ade80")}${marker("Z", "#60a5fa")}${marker("g", "#64748b")}</defs>
+    <line x1="${gx0.toFixed(1)}" y1="${gy0.toFixed(1)}" x2="${gx1.toFixed(1)}" y2="${gy1.toFixed(1)}" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah-g)"/>
+    <text x="${(gx0 + 6).toFixed(1)}" y="${(gy0 + 8).toFixed(1)}" fill="#64748b" font-size="7">g</text>
+    ${body}${arrow([1, 0, 0], "#f87171", "X")}${arrow([0, 1, 0], "#4ade80", "Y")}${arrow([0, 0, 1], "#60a5fa", "Z")}
+  </svg>`;
+}
+
+let boardUid = null, boardName = null;           // from the last full report
+let tiltSent = null, tiltSentAt = 0, tiltBusy = false;
+
+function angleDeg(a, b) {
+  const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const n = Math.hypot(...a) * Math.hypot(...b) || 1;
+  return Math.acos(Math.max(-1, Math.min(1, d / n))) * 180 / Math.PI;
+}
+
+function onTilt(cg) {
+  const g = cg.map(v => v / 100);
+  const ang = tiltAngles(g);
+  document.getElementById("tiltCard").style.display = "block";
+  document.getElementById("tiltView").innerHTML = tiltSvg(g)
+    + `<div class="raw" style="flex:1">X ${g[0].toFixed(2)} g\nY ${g[1].toFixed(2)} g\nZ ${g[2].toFixed(2)} g\n\nroll  ${ang.roll.toFixed(0)}&deg;\npitch ${ang.pitch.toFixed(0)}&deg;</div>`;
+  sendTilt(g);
+}
+
+// Forward to the dashboard: at most 5 per second, and only when it moved a degree or more
+// (plus one per second while still), so 30 boards don't flood the teacher's server.
+async function sendTilt(g) {
+  const url = serverUrlNow();
+  const now = performance.now();
+  if (!url || !boardUid || tiltBusy || now - tiltSentAt < 200) return;
+  if (tiltSent && angleDeg(g, tiltSent) < 1 && now - tiltSentAt < 1000) return;
+  tiltBusy = true; tiltSent = g; tiltSentAt = now;
+  try {
+    await fetch(url + "/api/tilt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ uid: boardUid, id: boardName, t: g }),
+    });
+  } catch (e) { /* the once-per-second report logs connection problems */ }
+  tiltBusy = false;
+}
+
+// The server address from the box above, cleaned up
+function serverUrlNow() {
+  let serverUrl = serverUrlInput.value.trim().replace(/\/+$/, "");
+  if (serverUrl && !/^https?:\/\//i.test(serverUrl)) serverUrl = "http://" + serverUrl;
+  // The classroom server is plain http. An https:// address to a LAN IP or localhost can never work.
+  if (/^https:\/\/(\d{1,3}(\.\d{1,3}){3}|localhost)(:|\/|$)/i.test(serverUrl)) {
+    serverUrl = "http://" + serverUrl.slice("https://".length);
+    serverUrlInput.value = serverUrl;
+    log("The server uses http, not https. Changed the address to " + serverUrl + ".", "warn");
+  }
+  return serverUrl;
+}
+
 async function handleLine(line) {
   let payload;
   try {
@@ -388,6 +513,11 @@ async function handleLine(line) {
     return;
   }
 
+  if (Array.isArray(payload.tilt)) {   // live tilt line, 10 per second: don't log it
+    onTilt(payload.tilt);
+    return;
+  }
+
   if (!payload.sht40 && !payload.ds18b20) {
     // Boot/event JSON (e.g. {"event":"boot_id",...}) -- log locally only.
     log(JSON.stringify(payload));
@@ -395,15 +525,10 @@ async function handleLine(line) {
   }
 
   updateRawPanels(payload, line);   // show the raw data locally, even before a server URL is set
+  boardUid = payload.uid || payload.id;
+  boardName = payload.id;
 
-  let serverUrl = serverUrlInput.value.trim().replace(/\/+$/, "");
-  if (serverUrl && !/^https?:\/\//i.test(serverUrl)) serverUrl = "http://" + serverUrl;
-  // The classroom server is plain http. An https:// address to a LAN IP or localhost can never work.
-  if (/^https:\/\/(\d{1,3}(\.\d{1,3}){3}|localhost)(:|\/|$)/i.test(serverUrl)) {
-    serverUrl = "http://" + serverUrl.slice("https://".length);
-    serverUrlInput.value = serverUrl;
-    log("The server uses http, not https. Changed the address to " + serverUrl + ".", "warn");
-  }
+  const serverUrl = serverUrlNow();
   if (!serverUrl) {
     log("Set the teacher's server URL above to start sending reports.", "warn");
     return;

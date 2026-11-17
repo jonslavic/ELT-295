@@ -92,6 +92,37 @@ def report():
     return jsonify({"status": "ok"})
 
 
+# Live tilt: bridges post a board's latest gravity vector up to 5x per second (only when it
+# moved), separate from the once-per-second report. key -> {"t": [x,y,z] g, "at": time, "seq": n}
+tilts = {}
+TILT_LIVE_SEC = 3
+
+
+@app.route("/api/tilt", methods=["POST", "OPTIONS"])
+def tilt_report():
+    if request.method == "OPTIONS":
+        return ("", 204)  # CORS preflight
+    p = request.get_json(silent=True) or {}
+    t = p.get("t")
+    key = p.get("uid") or p.get("id")
+    if not key or not isinstance(t, list) or len(t) != 3 or not all(isinstance(v, (int, float)) for v in t):
+        return jsonify({"error": "expected {uid, t: [x, y, z]}"}), 400
+    with devices_lock:
+        seq = tilts.get(str(key), {}).get("seq", 0) + 1
+        tilts[str(key)] = {"t": [float(v) for v in t], "at": time.time(), "seq": seq}
+    return jsonify({"status": "ok"})
+
+
+@app.route("/api/tilts")
+def api_tilts():
+    # The dashboard polls this 10x per second (from localhost, not through the tunnel).
+    now = time.time()
+    with devices_lock:
+        for k in [k for k, e in tilts.items() if now - e["at"] > TILT_LIVE_SEC]:
+            del tilts[k]
+        return jsonify({k: {"t": e["t"], "seq": e["seq"]} for k, e in tilts.items()})
+
+
 @app.route("/api/devices")
 def api_devices():
     now = time.time()

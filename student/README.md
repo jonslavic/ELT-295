@@ -55,7 +55,7 @@ Install in the Arduino IDE (Library Manager, Ctrl+Shift+I):
 5. Type a name and click **Set name**. It's saved on the board.
 6. Find your card on the projected dashboard.
 
-The bridge page shows your board's raw data live: the temperature sensor's scratchpad and bring-up checks, the 1-Wire bus traffic, the microphone's bias, min/max and loudness, the accelerometer's registers, X/Y/Z and I2C traffic, and the raw line the Uno sent.
+The bridge page shows a live 3D view of the accelerometer's tilt (10 updates per second, also sent on to the class dashboard) and your board's raw data: the temperature sensor's scratchpad and bring-up checks, the 1-Wire bus traffic, the microphone's bias, min/max and loudness, the accelerometer's registers, X/Y/Z and I2C traffic, and the raw line the Uno sent.
 
 ## Board bring-up (`TempAlarm_Net`)
 
@@ -79,6 +79,7 @@ If the temperature sensor or the accelerometer fails, the board retries every 3 
 - Garbled Serial Monitor text: match the baud rate to the sketch (see above).
 - `OneWire.h` or `DallasTemperature.h` not found: install the libraries above.
 - Bridge says "Failed to open serial port": close the Serial Monitor and replug the board.
+- Serial Monitor shows many {"tilt":[...]} lines: normal. TempAlarm_Net sends the accelerometer's tilt 10 times a second for the live 3D view (centi-g: 100 = 1 g).
 - Bridge shows no bring-up panels: the board has an older sketch; re-upload `TempAlarm_Net`.
 - Accelerometer "nothing at 0x18 or 0x19": SDA/SCL swapped or not on A4/A5, or the Grove cable isn't fully seated.
 - Accelerometer reads about 0 g, or far from 1 g, while still: re-seat the cable; if WHO_AM_I isn't `0x33`, it's a different chip.

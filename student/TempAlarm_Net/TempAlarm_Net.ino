@@ -47,7 +47,8 @@
 //   while the Uno is busy sending its report. A bang lasts only a few ms, so each graph
 //   point is the most extreme sample of its 100 ms (furthest from 1 g), not just whichever
 //   sample happened to come last. Every report also carries the smallest and largest |a|
-//   of the second.
+//   of the second. Between reports, a short {"tilt":[x,y,z]} line (centi-g, each 100 ms
+//   averaged) goes out 10x per second, so the bridge and dashboard can show tilt live.
 //   Bring-up: bus scan, WHO_AM_I (must read 0x33), config written and read back, and a
 //   functional check (|a| about 1 g while still). Shake it once to pass "moved".
 //
@@ -239,6 +240,15 @@ bool readAccel() {
   return true;
 }
 
+// A short line, 10 per second, so the bridge (and the dashboard) can show tilt live instead of
+// once per second. Centi-g: 100 = 1 g. Example: {"tilt":[2,-5,99]}
+void sendTiltLine(const int16_t *t) {
+  Serial.print(F("{\"tilt\":["));
+  Serial.print(t[0]); Serial.print(',');
+  Serial.print(t[1]); Serial.print(',');
+  Serial.print(t[2]); Serial.println(F("]}"));
+}
+
 // One sample from the FIFO: update this second's numbers and the current graph point
 void accelSample() {
   uint16_t m = accMagMg();
@@ -255,11 +265,14 @@ void accelSample() {
   }
   for (uint8_t i = 0; i < 3; i++) accBucketSum[i] += accMg[i];
   if (++accBucketN >= ACCEL_BUCKET) {
+    int16_t avg[3];   // this 100 ms averaged, in centi-g
+    for (uint8_t i = 0; i < 3; i++) avg[i] = accBucketSum[i] / (ACCEL_BUCKET * 10L);
     if (accHistN < ACCEL_HIST_MAX) {
       memcpy(accHist[accHistN], accBucketPick, sizeof(accMg));
-      for (uint8_t i = 0; i < 3; i++) accTilt[accHistN][i] = accBucketSum[i] / (ACCEL_BUCKET * 10L);
+      memcpy(accTilt[accHistN], avg, sizeof(avg));
       accHistN++;
     }
+    sendTiltLine(avg);   // live tilt, 10 per second, between the full reports
     accBucketSum[0] = accBucketSum[1] = accBucketSum[2] = 0;
     accBucketN = 0;
   }

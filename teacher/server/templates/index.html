@@ -386,18 +386,50 @@ function tiltHtml(key) {
   if (!st || !st.cur) return "";
   const a = tiltAngles(st.cur);
   return `<div class="tilt" data-tilt="${esc(key)}">${tiltSvg(st.cur)}
-    <div class="tilt-angles">roll ${fmt(a.roll, 0)}&deg;<br>pitch ${fmt(a.pitch, 0)}&deg;</div></div>`;
+    <div class="tilt-angles">roll ${fmt(a.roll, 0)}&deg;<br>pitch ${fmt(a.pitch, 0)}&deg;<br>
+      ${st.liveAt && Date.now() - st.liveAt < TILT_LIVE_MS ? '<span style="color:#22c55e">&#9679; live</span>' : "1 s behind"}</div></div>`;
 }
 
-// Play each board's queued points, one every 100 ms, so the board moves smoothly between reports
+// Live tilt: the bridge forwards each board's tilt up to 5x per second (when it moves);
+// fetch it 10x per second. This page runs on the teacher's PC, so this never uses the tunnel.
+const TILT_LIVE_MS = 1500;   // no live update this long -> fall back to the 1 s report playback
+async function pollTilts() {
+  try {
+    const live = await (await fetch("/api/tilts")).json();
+    for (const [key, v] of Object.entries(live)) {
+      const st = tiltState[key] || (tiltState[key] = { cur: null, queue: [], t: null });
+      if (st.seq === v.seq) continue;
+      st.seq = v.seq;
+      st.target = v.t;
+      st.liveAt = Date.now();
+      if (!st.cur) st.cur = v.t;
+    }
+  } catch (e) { /* server restarting: try again */ }
+  setTimeout(pollTilts, 100);
+}
+
+// 20x per second: ease toward the live tilt, or (no live data) play the last report's
+// 10 points one per 100 ms
 setInterval(() => {
+  const now = Date.now();
   for (const [key, st] of Object.entries(tiltState)) {
-    if (!st.queue.length) continue;
-    st.cur = st.queue.shift();
+    let next = null;
+    if (st.liveAt && now - st.liveAt < TILT_LIVE_MS && st.target) {
+      st.queue = [];
+      if (!st.cur) next = st.target;
+      else if (Math.max(...st.cur.map((v, i) => Math.abs(st.target[i] - v))) > 0.003) {
+        next = st.cur.map((v, i) => v + (st.target[i] - v) * 0.45);
+      }
+    } else if (st.queue.length && now - (st.shiftAt || 0) >= 100) {
+      next = st.queue.shift();
+      st.shiftAt = now;
+    }
+    if (!next) continue;
+    st.cur = next;
     const el = [...document.querySelectorAll(".tilt[data-tilt]")].find(e => e.dataset.tilt === key);
     if (el) el.outerHTML = tiltHtml(key);
   }
-}, 100);
+}, 50);
 
 // Grove LIS3DHTR bring-up and raw registers (TempAlarm_Net)
 function renderAccel(acc) {
@@ -651,6 +683,7 @@ document.getElementById("copyBtn").addEventListener("click", async () => {
 
 loadInfo();
 poll();
+pollTilts();
 setInterval(poll, 1000);
 </script>
 
