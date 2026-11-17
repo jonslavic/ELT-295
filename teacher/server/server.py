@@ -9,18 +9,31 @@ their Uno's JSON directly and POST it here. This server just collects
 those reports and serves the live dashboard webpage.
 
 Usage:
-    python server.py [--host 0.0.0.0] [--port 8000]
+    python server.py [--host 0.0.0.0] [--port 8000] [--tunnel | --public-url URL]
 
 Then, on the teacher's machine, find its LAN IP (Windows: `ipconfig`,
 look for IPv4 Address) and give students that address, e.g.
     http://192.168.1.42:8000
 as the dashboard URL, and the same address as the "server URL" field
 in bridge.html.
+
+If the network blocks students from reaching the teacher's PC directly
+(blocked ports, client isolation, different subnets), start with --tunnel:
+the server launches a Cloudflare quick tunnel (cloudflared) and students
+use the https://<random>.trycloudflare.com address it prints instead of
+an IP. Only outgoing HTTPS to Cloudflare is needed, which schools allow.
+The address changes every time the tunnel starts, so students download a
+fresh bridge each class. --public-url sets a fixed address instead (for
+example a named Cloudflare tunnel you set up yourself).
 """
 
 import argparse
+import atexit
 import os
+import re
+import shutil
 import socket
+import subprocess
 import threading
 import time
 import webbrowser
@@ -39,6 +52,7 @@ EXPIRE_AFTER_SEC = 180  # ...and drop it from the dashboard entirely after this 
 PUBLIC_URL = "http://localhost:8000"  # address students reach this server at (set in main)
 OTHER_URLS = []     # this PC's other network addresses, in case PUBLIC_URL picked the wrong adapter
 LOCAL_ONLY = False  # True when started with --host 127.0.0.1 (other computers can't connect)
+TUNNEL = False      # True when PUBLIC_URL is a Cloudflare tunnel rather than this PC's IP
 
 
 @app.after_request
@@ -126,7 +140,7 @@ def local_ips():
 @app.route("/api/info")
 def api_info():
     # What the dashboard banner shows: the address students type into the bridge.
-    return jsonify({"url": PUBLIC_URL, "others": OTHER_URLS, "local_only": LOCAL_ONLY})
+    return jsonify({"url": PUBLIC_URL, "others": OTHER_URLS, "local_only": LOCAL_ONLY, "tunnel": TUNNEL})
 
 
 @app.route("/bridge.html")
@@ -154,14 +168,60 @@ def pick_port(host, port, tries=20):
     return port  # nothing free nearby: let Flask report the real error
 
 
+def find_cloudflared():
+    # On PATH, next to this server / the launcher, or where `winget install Cloudflare.cloudflared` puts it.
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [shutil.which("cloudflared"),
+                  os.path.join(here, "cloudflared.exe"),
+                  os.path.join(here, "..", "cloudflared.exe"),
+                  os.path.join(here, "..", "runtime", "cloudflared.exe"),  # Start_Dashboard.bat downloads it here
+                  os.path.join(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"), "cloudflared", "cloudflared.exe"),
+                  os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "cloudflared", "cloudflared.exe")]
+    return next((c for c in candidates if c and os.path.isfile(c)), None)
+
+
+def start_tunnel(port, timeout=45):
+    """Start a Cloudflare quick tunnel to this server; return its https URL, or None."""
+    exe = find_cloudflared()
+    if not exe:
+        print(" Cloudflare tunnel: cloudflared not found. Start_Dashboard.bat downloads it automatically;")
+        print(" or install it with  winget install --id Cloudflare.cloudflared  and start again.")
+        return None
+    print(" Starting Cloudflare tunnel (takes a few seconds)...")
+    proc = subprocess.Popen([exe, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{port}"],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                            encoding="utf-8", errors="replace")
+    found = threading.Event()
+    result = {}
+
+    def pump():
+        # cloudflared prints the address in its log; keep draining the pipe so it never blocks.
+        for line in proc.stdout:
+            m = re.search(r"https://[-a-z0-9]+\.trycloudflare\.com", line)
+            if m and not found.is_set():
+                result["url"] = m.group(0)
+                found.set()
+    threading.Thread(target=pump, daemon=True).start()
+
+    if not found.wait(timeout) or proc.poll() is not None:
+        proc.terminate()
+        print(" Cloudflare tunnel did not start (no internet, or Cloudflare blocked?). Using the LAN address.")
+        return None
+    atexit.register(proc.terminate)  # close the tunnel with the server
+    return result["url"]
+
+
 def main():
-    global EXPIRE_AFTER_SEC, PUBLIC_URL, OTHER_URLS, LOCAL_ONLY
+    global EXPIRE_AFTER_SEC, PUBLIC_URL, OTHER_URLS, LOCAL_ONLY, TUNNEL
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--expire-min", type=float, default=EXPIRE_AFTER_SEC / 60,
                         help="remove boards from the dashboard after this many minutes without a report (default 3)")
     parser.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser on start")
+    parser.add_argument("--tunnel", action="store_true",
+                        help="give students a Cloudflare https://...trycloudflare.com address instead of this PC's IP")
+    parser.add_argument("--public-url", help="address students connect to, if you have your own (e.g. a named tunnel)")
     args = parser.parse_args()
 
     EXPIRE_AFTER_SEC = args.expire_min * 60
@@ -175,6 +235,14 @@ def main():
     PUBLIC_URL = f"http://{'localhost' if LOCAL_ONLY else lan_ip()}:{args.port}"
     if not LOCAL_ONLY:
         OTHER_URLS = [u for u in (f"http://{ip}:{args.port}" for ip in local_ips()) if u != PUBLIC_URL]
+    public = args.public_url.strip().rstrip("/") if args.public_url else None
+    if not public and args.tunnel:
+        public = start_tunnel(args.port)
+    if public:
+        if not re.match(r"https?://", public, re.I):
+            public = "https://" + public
+        OTHER_URLS = [PUBLIC_URL] + OTHER_URLS  # the LAN address still works where the network allows it
+        PUBLIC_URL, TUNNEL = public, True
 
     print("=" * 60)
     print(f" Teacher dashboard : http://localhost:{args.port}")

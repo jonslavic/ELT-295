@@ -480,7 +480,8 @@ async function loadInfo() {
     document.getElementById("connectUrl").textContent = info.url;
     if (info.others && info.others.length) {
       document.getElementById("connectOthers").innerHTML =
-        "Other addresses on this PC (try one if the first is on the wrong network): " +
+        (info.tunnel ? "Cloudflare tunnel address above (changes each time the dashboard starts). This PC's own addresses, if the network allows them: "
+                     : "Other addresses on this PC (try one if the first is on the wrong network): ") +
         info.others.map(u => `<code>${esc(u)}</code>`).join(", ");
     }
     document.getElementById("connectWarn").style.display = info.local_only ? "block" : "none";

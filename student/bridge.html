@@ -72,7 +72,7 @@
 
 <div class="card">
   <label for="serverUrl">Teacher's dashboard server URL</label>
-  <input type="text" id="serverUrl" placeholder="http://192.168.1.42:8000">
+  <input type="text" id="serverUrl" placeholder="https://your-class.trycloudflare.com">
 
   <div class="status-row">
     <span class="dot" id="connDot"></span>
@@ -394,7 +394,10 @@ async function handleLine(line) {
       log(`server rejected report: HTTP ${resp.status}`, "err");
     }
   } catch (e) {
-    log("Could not reach " + serverUrl + " (" + e.message + "). Is the dashboard running there, on the same network? Open that address in this browser to test it.", "err");
+    const hint = /trycloudflare\.com/i.test(serverUrl)
+      ? "The tunnel address changes every time the dashboard restarts: download a fresh bridge from your instructor's current address."
+      : "Is the dashboard running there, on the same network?";
+    log("Could not reach " + serverUrl + " (" + e.message + "). " + hint + " Open that address in this browser to test it.", "err");
   }
 }
 </script>

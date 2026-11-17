@@ -8,5 +8,5 @@ Arduino Uno labs where each student's board reports to a live dashboard on the i
 | [`teacher/`](teacher/README.md) | Instructor | The dashboard server, one-click launcher, and the brief for writing the labs |
 
 ```
-Uno (USB) -> student's browser (bridge.html) -> classroom network -> instructor's server -> dashboard
+Uno (USB) -> student's browser (bridge.html) -> Cloudflare tunnel (https://...trycloudflare.com) -> instructor's server -> dashboard
 ```
