@@ -372,6 +372,20 @@ function accelPanels(a, i2cLog) {
   return out;
 }
 
+// Lab 4: modules from the 37-sensor kit (TempAlarm_Net's KIT_SENSOR_1 / KIT_SENSOR_2)
+function kitPanels(kit) {
+  return kit.map(k => {
+    const checks = (k.checks || []).map(([label, ok]) => ok === null
+      ? `<span class="warn">LOOK</span> ${esc(label)}\n` : checkRow(esc(label), ok)).join("");
+    return `<div class="card"><h2>${esc(k.ky)} ${esc(k.name)} (slot ${esc(k.slot)}, ${esc(k.kind)})</h2><div class="raw">`
+      + `<b>${esc(k.text || "")}</b>${k.active ? `   <span class="pass">[ACTIVE]</span>` : ""}\n\n`
+      + `Wiring: ${esc(k.wiring || "")}\n\n`
+      + checks
+      + `\nRaw:\n${esc(JSON.stringify(k.raw || {}, null, 2))}`
+      + `</div></div>`;
+  }).join("");
+}
+
 function updateRawPanels(p, line) {
   let out = `<div class="card"><h2>This board</h2><div class="raw">`
     + `Name:         ${esc(p.id)}   (change it above; it is saved on the Uno)\n`
@@ -380,6 +394,7 @@ function updateRawPanels(p, line) {
   out += p.ds18b20 ? ds18b20Panels(p) : "";
   if (p.mic) out += micPanel(p.mic);
   if (p.accel && !p.sht40) out += accelPanels(p.accel, p.i2c_log);   // SHT40 boards show theirs below
+  if (Array.isArray(p.kit) && p.kit.length) out += kitPanels(p.kit);
   if (p.sht40) out += sht40Panels(p);
   out += `<div class="card"><h2>Raw line from the board</h2><div class="raw">${esc(line)}</div></div>`;
   document.getElementById("rawPanels").innerHTML = out;

@@ -58,6 +58,21 @@
 #include <EEPROM.h>
 #include <Wire.h>
 
+// ===== Lab 4: your two sensors from the 37-sensor kit ======================================
+// Write the module's KY number (e.g. KY018, KY040), or KitNone for an empty slot. Wiring for
+// each module and slot: student/KitSensors.md. Slot 1 uses D4 D5 D6 A1, slot 2 uses D7 D10
+// D11 A2 (and A3 for a joystick's Y), so Labs 1-3's sensors stay connected.
+#ifndef KIT_SENSOR_1
+#define KIT_SENSOR_1  KitNone
+#endif
+#ifndef KIT_SENSOR_2
+#define KIT_SENSOR_2  KitNone
+#endif
+#include "KitSensors.h"
+// ===========================================================================================
+
+bool reporting = false;   // true while the 1 s report is being printed (no tilt lines inside it)
+
 const int ONE_WIRE_PIN = 2;
 const int BUZZER_PIN   = 9;
 const int MIC_AO_PIN = A0;     // HW-496 analog output (audio riding on a DC bias)
@@ -243,6 +258,7 @@ bool readAccel() {
 // A short line, 10 per second, so the bridge (and the dashboard) can show tilt live instead of
 // once per second. Centi-g: 100 = 1 g. Example: {"tilt":[2,-5,99]}
 void sendTiltLine(const int16_t *t) {
+  if (reporting) return;   // never inside the report's JSON line (one tilt update is skipped)
   Serial.print(F("{\"tilt\":["));
   Serial.print(t[0]); Serial.print(',');
   Serial.print(t[1]); Serial.print(',');
@@ -681,7 +697,11 @@ void handleSerialCommands() {
 
 void printBool(bool b) { Serial.print(b ? F("true") : F("false")); }
 
+// The DS18B20 reading, for kit sensors that compare against it (KY-013, KY-015, KY-028)
+float kitRefTempC() { return lastReadOk ? tempC() : NAN; }
+
 void sendReport(bool presence, bool crcOk, bool ok) {
+  reporting = true;
   float c = tempC();
   float f = c * 9.0f / 5.0f + 32.0f;
 
@@ -783,6 +803,13 @@ void sendReport(bool presence, bool crcOk, bool ok) {
     Serial.print(F("]}"));
   }
   Serial.print(']');
+  // The accelerometer part is out: start its next window now, and keep emptying its FIFO
+  // while the rest of this (long) line goes out, so no samples are lost.
+  accelResetWindow();
+  accelTick(millis());
+
+  kitReport();              // Lab 4 kit sensors: ,"kit":[...]
+  accelTick(millis());
 
   Serial.print(F(",\"alarm\":{\"state\":\"")); Serial.print(stateName(state));
   Serial.print(F("\",\"beep_on_f\":"));  Serial.print(BEEP_ON_F, 1);
@@ -800,6 +827,7 @@ void sendReport(bool presence, bool crcOk, bool ok) {
   Serial.println(F("]}"));
 
   owLogCount = 0;  // new log window
+  reporting = false;
 }
 
 // One report cycle: read the finished conversion, start the next one, report
@@ -822,13 +850,13 @@ void readCycle() {
   owCommand(OW_CONVERT_T);  // start the next conversion
   micCloseWindow();         // this second's sound numbers
   accelCloseWindow();       // this second's motion numbers
+  kitCloseWindow();         // this second's kit-sensor numbers
 
   if (ok) state = nextState(state, tempC() * 9.0f / 5.0f + 32.0f);
   else    state = ALARM_OFF;
 
   lastReadOk = ok;
-  sendReport(presence, crcOk, ok);
-  accelResetWindow();
+  sendReport(presence, crcOk, ok);   // also starts the accelerometer's next window
 }
 
 // ================= Arduino entry points =================
@@ -851,6 +879,7 @@ void setup() {
   runBringUp();
   runMicBringUp();
   runAccelBringUp();
+  kitBegin();                       // Lab 4 kit sensors (prints their wiring)
   accelResetWindow();
   owCommand(OW_CONVERT_T);          // first conversion for the first report
   lastBringUp = lastRead = lastAccelBringUp = millis();
@@ -861,6 +890,7 @@ void loop() {
   sampleMic();                 // keep the microphone window filling between reports
   unsigned long now = millis();
   accelTick(now);              // empty the accelerometer's FIFO (200 samples per second)
+  kitLoop(now);                // Lab 4 kit sensors: sample, and drive any output
 
   if (now - lastRead >= READ_MS) {
     lastRead = now;

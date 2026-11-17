@@ -33,6 +33,7 @@ To use your own board too, run a bridge tab on your PC. Download it from `http:/
 - Expandable panels per board: bring-up checks, sensor details (ROM, labeled scratchpad), 1-Wire messages, and the microphone.
 - A 3D view of each accelerometer that tilts with the real board (X/Y/Z arrows, roll and pitch in degrees), updated live: the board sends its tilt 10 times a second and the bridge forwards it (at most 5 per second, only when it moved, plus one per second while still), so it follows the board within a fraction of a second and shows a green "live" mark. Without live updates (an older bridge) it plays back the once-per-second report instead, about a second behind. Gravity is the reference, so it needs no zeroing; turning the board flat on the table (yaw) does not show, because an accelerometer cannot sense it.
 - A live X/Y/Z accelerometer graph (last 10 seconds, 10 points per second, each the most extreme sample of its 100 ms; the scale grows from +/-2 g up to +/-16 g when someone bangs the board) with the largest jolt each second, a Motion row (peak g), and an expandable LIS3DHTR panel with its bring-up checks and raw registers. A board without the accelerometer shows "no accelerometer".
+- Lab 4 kit sensors (up to two per board, chosen in `TempAlarm_Net.ino`): each shows its reading, a one-minute sparkline and an expandable checks summary at the bottom of the card. See [../student/KitSensors.md](../student/KitSensors.md).
 - A board that stops reporting greys out after about 6 seconds and is removed after 3 minutes.
 
 ## Options

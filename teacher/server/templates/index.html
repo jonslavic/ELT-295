@@ -125,6 +125,11 @@
   .pass { color: var(--ok); font-weight: 600; }
   .fail { color: var(--off); font-weight: 600; }
   .i2c-w { color: #fbbf24; }
+  .kit { border-top: 1px solid #334155; margin-top: 10px; padding-top: 8px; }
+  .kit-head { font-size: 0.9rem; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .kit-text { font-size: 0.85rem; margin: 4px 0; font-variant-numeric: tabular-nums; }
+  .kit svg { width: 100%; height: 26px; background: #0b1220; border-radius: 4px; }
+  .look { color: #fbbf24; font-weight: 600; }
   .i2c-r { color: #34d399; }
   #empty {
     color: var(--muted);
@@ -183,6 +188,54 @@ function renderI2CLog(log) {
 
 // ---------- Visuals ----------
 const T_MIN_F = 50, T_MAX_F = 100;   // thermometer / gauge range
+// ---------- Lab 4 kit sensors (data.kit: up to two modules from the 37-sensor kit) ----------
+const kitHist = {};      // "<board key>:<slot>" -> { t: last uptime, v: [values] }
+const KIT_KEEP = 60;     // one minute of the module's main value
+
+function pushKit(id, k, uptime) {
+  const key = `${id}:${k.slot}:${k.ky}`;
+  const h = kitHist[key] || (kitHist[key] = { t: null, v: [] });
+  if (h.t === uptime) return h;
+  h.t = uptime;
+  if (typeof k.val === "number") { h.v.push(k.val); if (h.v.length > KIT_KEEP) h.v.shift(); }
+  return h;
+}
+
+function kitSpark(vals) {
+  if (vals.length < 2) return "";
+  const W = 240, H = 26, lo = Math.min(...vals), hi = Math.max(...vals), span = hi - lo || 1;
+  const pts = vals.map((v, i) => `${(i / (KIT_KEEP - 1) * W).toFixed(1)},${(H - 3 - (v - lo) / span * (H - 6)).toFixed(1)}`).join(" ");
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="last minute"><polyline points="${pts}" fill="none" stroke="#38bdf8" stroke-width="1.5"/></svg>`;
+}
+
+function kitChecks(k) {
+  return (k.checks || []).map(([label, ok]) => ok === null
+    ? `<div><span class="look">LOOK</span> ${esc(label)}</div>` : checkRow(esc(label), ok)).join("");
+}
+
+function kitHtml(d, k, uptime) {
+  const h = pushKit(d.key, k, uptime);
+  const autos = (k.checks || []).filter(c => c[1] !== null), looks = (k.checks || []).length - autos.length;
+  const passed = autos.filter(c => c[1]).length;
+  const bar = typeof k.bar === "number"
+    ? `<div style="height:6px;background:#0b1220;border-radius:3px;margin:4px 0"><div style="width:${Math.max(0, Math.min(100, k.bar))}%;height:100%;background:#38bdf8;border-radius:3px"></div></div>` : "";
+  const summary = autos.length
+    ? `<span class="${passed === autos.length ? "pass" : "fail"}">${passed}/${autos.length} PASS</span>${looks ? ` + ${looks} to check by eye` : ""}`
+    : `${looks} to check by eye`;
+  return `<div class="kit">
+      <div class="kit-head"><span class="dot ${k.active ? "online" : ""}" title="${k.active ? "triggered / on" : "idle / off"}"></span>
+        <b>${esc(k.ky)}</b> ${esc(k.name)} <span class="uid">slot ${esc(k.slot)} ${esc(k.kind || "")}</span></div>
+      <div class="kit-text">${esc(k.text || "")}</div>
+      ${bar}${kitSpark(h.v)}
+      <details data-key="${esc(d.key)}:kit${esc(k.slot)}">
+        <summary>Checks: ${summary}</summary>
+        <div class="i2c-log">${kitChecks(k)}
+          <div style="margin-top:6px;color:var(--muted)">Wiring: ${esc(k.wiring || "")}</div>
+          <div style="margin-top:6px;white-space:pre-wrap">${esc(JSON.stringify(k.raw || {}, null, 1))}</div></div>
+      </details>
+    </div>`;
+}
+
 const accelHist = {};                // device id -> [{x,y,z,t}] (last ACCEL_KEEP samples)
 const ACCEL_KEEP = 100;              // 10 s of graph: TempAlarm_Net sends 10 points per second
 
@@ -639,6 +692,7 @@ async function poll() {
           ${viz}${accelViz}
           <div class="readings">${rows}</div>
           ${ow}${micPanelHtml}${accelPanelHtml}${i2c}
+          ${(Array.isArray(data.kit) ? data.kit : []).map(k => kitHtml(d, k, data.uptime_ms)).join("")}
         </div>`;
     }).join("");
     grid.querySelectorAll("details[data-key]").forEach(e => {

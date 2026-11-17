@@ -10,7 +10,9 @@ Arduino Uno sketches for the labs, plus `bridge.html`, which sends your board's 
 | `TempSensor_DS18B20/` | Reads the HW-506 (DS18B20) temperature sensor and prints °C/°F to the Serial Monitor |
 | `DS18B20_Diagnostic/` | Troubleshooting: reports line idle level, presence pulse and ROM code |
 | `TempAlarm/` | DS18B20 + buzzer alarm (constants at the top set the thresholds) |
-| `TempAlarm_Net/` | The class sketch: alarm + 1-Wire bring-up + HW-496 microphone + LIS3DHTR accelerometer, reporting to the dashboard |
+| `TempAlarm_Net/` | The class sketch: alarm + 1-Wire bring-up + HW-496 microphone + LIS3DHTR accelerometer, reporting to the dashboard. `KitSensors.h` holds the Lab 4 drivers for the 37-sensor kit |
+
+**Lab 4:** add two new modules from the 37-sensor kit. Wiring and setup for every module: [KitSensors.md](KitSensors.md).
 
 ## Wiring
 
