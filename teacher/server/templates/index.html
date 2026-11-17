@@ -117,6 +117,9 @@
   .speaker.solid .cap { color: var(--off); }
   @keyframes beep { 0% { opacity: 1; } 50% { opacity: 0.1; } }
   .accel { margin-bottom: 10px; }
+  .tilt { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 6px; }
+  .tilt svg { background: #0b1220; border-radius: 6px; }
+  .tilt-angles { font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 1.5; }
   .accel svg { width: 100%; height: auto; background: #0b1220; border-radius: 6px; }
   .accel .legend { display: flex; justify-content: space-between; font-size: 0.8rem; margin-top: 4px; font-variant-numeric: tabular-nums; }
   .pass { color: var(--ok); font-weight: 600; }
@@ -271,15 +274,19 @@ function pushAccel(id, acc, uptime) {
 
 function accelGraphSvg(id, acc) {
   const h = accelHist[id] || [];
-  const W = 240, H = 90, G = 2;   // +/- G g full scale
+  const W = 240, H = 90;
+  // Full scale follows the data: +/-2 g for tilting, growing to 4, 8 or 16 g after a bang
+  const biggest = h.reduce((m, s) => Math.max(m, Math.abs(s.x), Math.abs(s.y), Math.abs(s.z)), 0);
+  const G = [2, 4, 8, 16].find(g => biggest <= g * 0.95) || 16;
   const yOf = g => H / 2 - (Math.max(-G, Math.min(G, g)) / G) * (H / 2 - 4);
   const line = (key, color) => {
     if (h.length < 2) return "";
     const pts = h.map((s, i) => `${(i / (ACCEL_KEEP - 1) * W).toFixed(1)},${yOf(s[key]).toFixed(1)}`).join(" ");
     return `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round"/>`;
   };
-  const grid = [-1, 0, 1].map(g => `<line x1="0" x2="${W}" y1="${yOf(g)}" y2="${yOf(g)}" stroke="#334155" stroke-width="${g === 0 ? 1 : 0.5}" ${g === 0 ? "" : 'stroke-dasharray="3 3"'}/>`).join("");
-  const labels = [[1, "+1g"], [0, "0"], [-1, "-1g"]].map(([g, t]) => `<text x="3" y="${yOf(g) - 2}" fill="#64748b" font-size="7">${t}</text>`).join("");
+  const half = G / 2;
+  const grid = [-half, 0, half].map(g => `<line x1="0" x2="${W}" y1="${yOf(g)}" y2="${yOf(g)}" stroke="#334155" stroke-width="${g === 0 ? 1 : 0.5}" ${g === 0 ? "" : 'stroke-dasharray="3 3"'}/>`).join("");
+  const labels = [[half, `+${half}g`], [0, "0"], [-half, `-${half}g`]].map(([g, t]) => `<text x="3" y="${yOf(g) - 2}" fill="#64748b" font-size="7">${t}</text>`).join("");
   return `<div class="accel">
     <svg viewBox="0 0 ${W} ${H}" aria-label="acceleration XYZ graph">${grid}${labels}${line("x", "#f87171")}${line("y", "#4ade80")}${line("z", "#60a5fa")}</svg>
     <div class="legend">
@@ -289,6 +296,108 @@ function accelGraphSvg(id, acc) {
       ${acc.max_g !== undefined ? `<span title="largest |a| in the last second">max ${fmt(acc.max_g, 2)} g</span>` : ""}
     </div></div>`;
 }
+
+// ---------- 3D tilt view ----------
+// At rest the accelerometer measures gravity: a vector pointing UP in the sensor's own X/Y/Z
+// frame. Rotating that vector onto world-up gives the board's tilt. Turning the board flat on
+// the table (yaw) doesn't change gravity, so an accelerometer can't see it: the view never yaws.
+const tiltState = {};   // device key -> { cur: [x,y,z] g, queue: [[x,y,z]...], t: uptime }
+
+function queueTilt(key, acc, uptime) {
+  const st = tiltState[key] || (tiltState[key] = { cur: null, queue: [], t: null });
+  if (st.t === uptime) return;          // same report seen twice
+  st.t = uptime;
+  const pts = Array.isArray(acc.tilt_cg) && acc.tilt_cg.length
+    ? acc.tilt_cg.map(p => p.map(v => v / 100))     // 10 averages per second (centi-g)
+    : [[acc.x_g, acc.y_g, acc.z_g]];                // older firmware: one point
+  st.queue = pts;                                   // play this second's points, newest last
+  if (!st.cur) st.cur = pts[pts.length - 1];
+}
+
+// Raise the X end -> pitch goes positive; raise the Y end -> roll goes positive
+function tiltAngles([x, y, z]) {
+  return { roll: Math.atan2(y, z) * 180 / Math.PI,
+           pitch: Math.atan2(x, Math.hypot(y, z)) * 180 / Math.PI };
+}
+
+function tiltSvg(g) {
+  // Rotation taking the measured "up" (g, normalized) onto world up (0,0,1): Rodrigues formula
+  const n = Math.hypot(...g) || 1;
+  const u = g.map(v => v / n);
+  const ax = [u[1], -u[0], 0];                         // u x (0,0,1)
+  const s = Math.hypot(ax[0], ax[1]), c = u[2];
+  const k = s > 1e-6 ? ax.map(v => v / s) : [1, 0, 0];
+  const ang = s > 1e-6 ? Math.atan2(s, c) : (c > 0 ? 0 : Math.PI);
+  const cs = Math.cos(ang), sn = Math.sin(ang), t1 = 1 - cs;
+  const rot = ([px, py, pz]) => {
+    const d = k[0] * px + k[1] * py + k[2] * pz;
+    const cx = k[1] * pz - k[2] * py, cy = k[2] * px - k[0] * pz, cz = k[0] * py - k[1] * px;
+    return [px * cs + cx * sn + k[0] * d * t1, py * cs + cy * sn + k[1] * d * t1, pz * cs + cz * sn + k[2] * d * t1];
+  };
+  // Fixed camera: turned 35 degrees, looking 25 degrees down. Returns [screenX, screenY, depth]
+  const az = -35 * Math.PI / 180, el = 25 * Math.PI / 180, S = 26, CX = 60, CY = 58;
+  const view = ([px, py, pz]) => {
+    const x1 = px * Math.cos(az) - py * Math.sin(az), y1 = px * Math.sin(az) + py * Math.cos(az);
+    // looking down: far points (+y) sit higher on screen; depth grows away from the camera
+    const y2 = y1 * Math.cos(el) - pz * Math.sin(el), z2 = y1 * Math.sin(el) + pz * Math.cos(el);
+    return [CX + S * x1, CY - S * z2, y2];
+  };
+  const P = p => view(rot(p));
+
+  // The board: a flat box 2.0 x 1.4 x 0.16, sensor axes as on the chip
+  const bx = 1.0, by = 0.7, bz = 0.08;
+  const faces = [
+    { n: [0, 0, 1],  c: "#0e7490", v: [[-bx, -by, bz], [bx, -by, bz], [bx, by, bz], [-bx, by, bz]] },   // top
+    { n: [0, 0, -1], c: "#164e63", v: [[-bx, -by, -bz], [-bx, by, -bz], [bx, by, -bz], [bx, -by, -bz]] },
+    { n: [1, 0, 0],  c: "#155e75", v: [[bx, -by, -bz], [bx, by, -bz], [bx, by, bz], [bx, -by, bz]] },
+    { n: [-1, 0, 0], c: "#155e75", v: [[-bx, -by, -bz], [-bx, -by, bz], [-bx, by, bz], [-bx, by, -bz]] },
+    { n: [0, 1, 0],  c: "#0f5f73", v: [[-bx, by, -bz], [-bx, by, bz], [bx, by, bz], [bx, by, -bz]] },
+    { n: [0, -1, 0], c: "#0f5f73", v: [[-bx, -by, -bz], [bx, -by, -bz], [bx, -by, bz], [-bx, -by, bz]] },
+  ];
+  let body = "";
+  for (const f of faces) {
+    const nz = view(rot(f.n))[2] - view([0, 0, 0])[2];   // facing the camera if it points toward -depth
+    if (nz >= 0) continue;
+    body += `<polygon points="${f.v.map(p => P(p).slice(0, 2).map(v => v.toFixed(1)).join(",")).join(" ")}" fill="${f.c}" stroke="#67e8f9" stroke-width="0.6"/>`;
+  }
+  // Chip on the top face, so the board's top is obvious
+  const chip = [[-0.22, -0.22, bz], [0.22, -0.22, bz], [0.22, 0.22, bz], [-0.22, 0.22, bz]];
+  if (view(rot([0, 0, 1]))[2] - view([0, 0, 0])[2] < 0) {
+    body += `<polygon points="${chip.map(p => P(p).slice(0, 2).map(v => v.toFixed(1)).join(",")).join(" ")}" fill="#111827"/>`;
+  }
+  const arrow = (dir, color, label) => {
+    const [x0, y0] = P([0, 0, 0]), [x1, y1] = P(dir.map(v => v * 1.55)), [xl, yl] = P(dir.map(v => v * 1.85));
+    return `<line x1="${x0.toFixed(1)}" y1="${y0.toFixed(1)}" x2="${x1.toFixed(1)}" y2="${y1.toFixed(1)}" stroke="${color}" stroke-width="2" marker-end="url(#ah-${label})"/>
+      <text x="${xl.toFixed(1)}" y="${(yl + 3).toFixed(1)}" fill="${color}" font-size="9" font-weight="700" text-anchor="middle">${label}</text>`;
+  };
+  const marker = (label, color) => `<marker id="ah-${label}" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="4" markerHeight="4" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="${color}"/></marker>`;
+  // World "down" (gravity) stays fixed on screen
+  const [gx0, gy0] = view([1.55, -1.1, 0.6]), [gx1, gy1] = view([1.55, -1.1, -0.2]);
+  return `<svg viewBox="0 0 120 112" width="120" height="112" aria-label="3D tilt of the accelerometer">
+    <defs>${marker("X", "#f87171")}${marker("Y", "#4ade80")}${marker("Z", "#60a5fa")}${marker("g", "#64748b")}</defs>
+    <line x1="${gx0.toFixed(1)}" y1="${gy0.toFixed(1)}" x2="${gx1.toFixed(1)}" y2="${gy1.toFixed(1)}" stroke="#64748b" stroke-width="1.5" marker-end="url(#ah-g)"/>
+    <text x="${(gx0 + 6).toFixed(1)}" y="${(gy0 + 8).toFixed(1)}" fill="#64748b" font-size="7">g</text>
+    ${body}${arrow([1, 0, 0], "#f87171", "X")}${arrow([0, 1, 0], "#4ade80", "Y")}${arrow([0, 0, 1], "#60a5fa", "Z")}
+  </svg>`;
+}
+
+function tiltHtml(key) {
+  const st = tiltState[key];
+  if (!st || !st.cur) return "";
+  const a = tiltAngles(st.cur);
+  return `<div class="tilt" data-tilt="${esc(key)}">${tiltSvg(st.cur)}
+    <div class="tilt-angles">roll ${fmt(a.roll, 0)}&deg;<br>pitch ${fmt(a.pitch, 0)}&deg;</div></div>`;
+}
+
+// Play each board's queued points, one every 100 ms, so the board moves smoothly between reports
+setInterval(() => {
+  for (const [key, st] of Object.entries(tiltState)) {
+    if (!st.queue.length) continue;
+    st.cur = st.queue.shift();
+    const el = [...document.querySelectorAll(".tilt[data-tilt]")].find(e => e.dataset.tilt === key);
+    if (el) el.outerHTML = tiltHtml(key);
+  }
+}, 100);
 
 // Grove LIS3DHTR bring-up and raw registers (TempAlarm_Net)
 function renderAccel(acc) {
@@ -447,8 +556,11 @@ async function poll() {
       }
       let accelViz = "";
       if (acc && !(acc.bringup && !acc.bringup.found)) {   // no graph while the sensor is missing
-        if (acc.ok) pushAccel(d.key, acc, data.uptime_ms);
-        accelViz = accelGraphSvg(d.key, acc);
+        if (acc.ok) {
+          pushAccel(d.key, acc, data.uptime_ms);
+          queueTilt(d.key, acc, data.uptime_ms);
+        }
+        accelViz = tiltHtml(d.key) + accelGraphSvg(d.key, acc);
       }
       const accelPanelHtml = acc && acc.bringup
         ? `<details data-key="${esc(d.key)}:accel">

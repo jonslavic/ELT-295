@@ -41,10 +41,13 @@
 //
 // LIS3DHTR: 3-axis accelerometer on I2C (address 0x19, or 0x18 if its SDO pin is tied low),
 //   driven register by register with Wire so the I2C traffic can be shown to the student.
-//   Set to +/-2 g, high-resolution (12-bit), 1 mg per count. A single reading per second only
-//   shows tilt; taps and shakes last tens of ms. So the loop reads it 50x per second: every
-//   report carries 10 points for the graph (one every 100 ms) plus the smallest and largest
-//   |a| seen in that second, so a tap between graph points still shows up.
+//   Set to +/-16 g, high-resolution (12-bit), 12 mg per count: a bang on the table easily
+//   passes 2 g (+/-2 g would clip it flat at 2 g). It measures 200x per second into its own
+//   32-sample FIFO, and the loop empties the FIFO every 10 ms, so no sample is lost, even
+//   while the Uno is busy sending its report. A bang lasts only a few ms, so each graph
+//   point is the most extreme sample of its 100 ms (furthest from 1 g), not just whichever
+//   sample happened to come last. Every report also carries the smallest and largest |a|
+//   of the second.
 //   Bring-up: bus scan, WHO_AM_I (must read 0x33), config written and read back, and a
 //   functional check (|a| about 1 g while still). Shake it once to pass "moved".
 //
@@ -73,14 +76,22 @@ const uint8_t LIS_ADDRS[2] = { 0x19, 0x18 };  // Grove default 0x19; 0x18 if SDO
 #define LIS_WHO_AM_I   0x0F    // reads 0x33 on a LIS3DH
 #define LIS_CTRL_REG1  0x20
 #define LIS_CTRL_REG4  0x23
+#define LIS_CTRL_REG5  0x24
 #define LIS_OUT_X_L    0x28    // X_L, X_H, Y_L, Y_H, Z_L, Z_H follow in order
+#define LIS_FIFO_CTRL  0x2E
+#define LIS_FIFO_SRC   0x2F    // bits 4..0 = samples waiting in the FIFO, bit 6 = overrun
 #define LIS_AUTO_INC   0x80    // set on the register address to read several in a row
-#define LIS_CFG1       0x57    // 100 Hz output rate, X/Y/Z enabled
-#define LIS_CFG4       0x88    // block data update, +/-2 g, high-resolution (1 mg per count)
+#define LIS_CFG1       0x67    // 200 Hz output rate, X/Y/Z enabled
+#define LIS_CFG4       0xB8    // block data update, +/-16 g, high-resolution (12 mg per count)
+#define LIS_CFG5       0x40    // FIFO enabled
+#define LIS_CFG_FIFO   0x80    // FIFO stream mode: keeps the newest 32 samples
+const int16_t LIS_MG_PER_COUNT = 12;   // at +/-16 g, high-resolution
+const int     LIS_RANGE_G = 16;
+const int     LIS_RATE_HZ = 200;
 
-const unsigned long ACCEL_SAMPLE_MS = 20;   // read the accelerometer 50x per second
-const uint8_t       ACCEL_HIST_EVERY = 5;   // keep every 5th read for the graph (10 points/s)
-#define ACCEL_HIST_MAX 10
+const unsigned long ACCEL_POLL_MS = 10;   // empty the FIFO this often (it holds 160 ms)
+const uint8_t       ACCEL_BUCKET = 20;    // samples per graph point: 20 at 200 Hz = 100 ms
+#define ACCEL_HIST_MAX 12
 
 // DS18B20 commands
 #define OW_SKIP_ROM      0xCC
@@ -155,7 +166,13 @@ int16_t  accMg[3];                    // latest X, Y, Z in mg (1000 mg = 1 g)
 uint8_t  accRaw[6];                   // latest raw output registers
 int16_t  accHist[ACCEL_HIST_MAX][3];  // graph points this second
 uint8_t  accHistN = 0;
-uint8_t  accReadCount = 0;
+uint8_t  accBucketN = 0;               // samples in the current graph point
+uint16_t accBucketDev = 0;             // its largest distance from 1 g (mg)
+int16_t  accBucketPick[3];             // ...and the sample that had it
+int32_t  accBucketSum[3];              // sum of its samples, for the average (tilt view)
+int16_t  accTilt[ACCEL_HIST_MAX][3];   // average of each graph point's 100 ms, in centi-g
+                                       // (smooth, for the dashboard's 3D tilt view)
+uint16_t accOverruns = 0;              // FIFO overflowed (samples lost) since boot
 uint16_t accWinMin = 0xFFFF, accWinMax = 0;  // smallest / largest |a| this second (mg)
 uint16_t accPeak = 0;                 // largest |a| since boot (shake test)
 unsigned long lastAccelRead = 0, lastAccelBringUp = 0;
@@ -171,7 +188,7 @@ struct I2cMsg {
   uint8_t len;
   uint8_t data[6];
 };
-#define I2C_LOG_MAX 2
+#define I2C_LOG_MAX 4
 I2cMsg  i2cLog[I2C_LOG_MAX];
 uint8_t i2cLogCount = 0;
 bool    i2cLogging = false;
@@ -214,27 +231,51 @@ uint16_t accMagMg() {   // |a| = sqrt(x^2 + y^2 + z^2), in mg
 bool readAccel() {
   if (!accAddr || !accReadRegs(LIS_OUT_X_L, accRaw, 6)) { accOk = false; return false; }
   for (uint8_t i = 0; i < 3; i++) {
-    // 12-bit value, left-justified in 16 bits: shift right 4 -> 1 mg per count at +/-2 g
-    accMg[i] = ((int16_t)((accRaw[2 * i + 1] << 8) | accRaw[2 * i])) >> 4;
+    // 12-bit value, left-justified in 16 bits: shift right 4, then 12 mg per count at +/-16 g
+    accMg[i] = (((int16_t)((accRaw[2 * i + 1] << 8) | accRaw[2 * i])) >> 4) * LIS_MG_PER_COUNT;
   }
   accOk = true;
   i2cLogging = false;   // log only the first read of each report window
   return true;
 }
 
-// Called from loop(): one read every ACCEL_SAMPLE_MS
-void accelTick(unsigned long now) {
-  if (!accAddr || now - lastAccelRead < ACCEL_SAMPLE_MS) return;
-  lastAccelRead = now;
-  if (!readAccel()) return;
+// One sample from the FIFO: update this second's numbers and the current graph point
+void accelSample() {
   uint16_t m = accMagMg();
   if (m < accWinMin) accWinMin = m;
   if (m > accWinMax) accWinMax = m;
   if (m > accPeak) accPeak = m;
   if (accPeak >= 1500) abu.moved = true;          // shaken or tapped: 1.5 g or more
-  if (++accReadCount >= ACCEL_HIST_EVERY) {
-    accReadCount = 0;
-    if (accHistN < ACCEL_HIST_MAX) memcpy(accHist[accHistN++], accMg, sizeof(accMg));
+
+  // Peak-hold: the graph point keeps the sample furthest from 1 g, so a short bang shows
+  uint16_t dev = m > 1000 ? m - 1000 : 1000 - m;
+  if (accBucketN == 0 || dev >= accBucketDev) {
+    accBucketDev = dev;
+    memcpy(accBucketPick, accMg, sizeof(accMg));
+  }
+  for (uint8_t i = 0; i < 3; i++) accBucketSum[i] += accMg[i];
+  if (++accBucketN >= ACCEL_BUCKET) {
+    if (accHistN < ACCEL_HIST_MAX) {
+      memcpy(accHist[accHistN], accBucketPick, sizeof(accMg));
+      for (uint8_t i = 0; i < 3; i++) accTilt[accHistN][i] = accBucketSum[i] / (ACCEL_BUCKET * 10L);
+      accHistN++;
+    }
+    accBucketSum[0] = accBucketSum[1] = accBucketSum[2] = 0;
+    accBucketN = 0;
+  }
+}
+
+// Called from loop(): every ACCEL_POLL_MS, read everything waiting in the FIFO
+void accelTick(unsigned long now) {
+  if (!accAddr || now - lastAccelRead < ACCEL_POLL_MS) return;
+  lastAccelRead = now;
+  uint8_t src;
+  if (!accReadRegs(LIS_FIFO_SRC, &src, 1)) { accOk = false; return; }
+  if (src & 0x40) accOverruns++;                  // FIFO filled up: oldest samples lost
+  uint8_t n = src & 0x1F;
+  for (uint8_t i = 0; i < n; i++) {
+    if (!readAccel()) return;
+    accelSample();
   }
 }
 
@@ -289,13 +330,20 @@ bool runAccelBringUp() {
   // Configure, then read the settings back
   accWriteReg(LIS_CTRL_REG1, LIS_CFG1);
   accWriteReg(LIS_CTRL_REG4, LIS_CFG4);
-  uint8_t r1 = 0, r4 = 0;
+  accWriteReg(LIS_FIFO_CTRL, 0x00);        // bypass first: clears the FIFO
+  accWriteReg(LIS_CTRL_REG5, LIS_CFG5);
+  accWriteReg(LIS_FIFO_CTRL, LIS_CFG_FIFO);
+  uint8_t r1 = 0, r4 = 0, r5 = 0, rf = 0;
   accReadRegs(LIS_CTRL_REG1, &r1, 1);
   accReadRegs(LIS_CTRL_REG4, &r4, 1);
-  abu.cfgOk = r1 == LIS_CFG1 && r4 == LIS_CFG4;
+  accReadRegs(LIS_CTRL_REG5, &r5, 1);
+  accReadRegs(LIS_FIFO_CTRL, &rf, 1);
+  abu.cfgOk = r1 == LIS_CFG1 && r4 == LIS_CFG4 && (r5 & 0x40) && (rf & 0xC0) == LIS_CFG_FIFO;
   Serial.print(F("  config: CTRL_REG1=0x")); printHexByte(r1);
   Serial.print(F(" CTRL_REG4=0x")); printHexByte(r4);
-  Serial.println(abu.cfgOk ? F(" (100 Hz, +/-2 g, 12-bit) [PASS]") : F(" [FAIL] (did not read back what was written)"));
+  Serial.print(F(" CTRL_REG5=0x")); printHexByte(r5);
+  Serial.print(F(" FIFO_CTRL=0x")); printHexByte(rf);
+  Serial.println(abu.cfgOk ? F(" (200 Hz, +/-16 g, 12-bit, FIFO) [PASS]") : F(" [FAIL] (did not read back what was written)"));
 
   // Functional: lying still, |a| should be about 1 g (gravity)
   delay(30);   // first samples at the new rate
@@ -686,12 +734,22 @@ void sendReport(bool presence, bool crcOk, bool ok) {
     Serial.print(F(",\"max_g\":")); Serial.print(accWinMax / 1000.0f, 3);
   }
   Serial.print(F(",\"peak_g\":"));  Serial.print(accPeak / 1000.0f, 3);
-  Serial.print(F(",\"hist_ms\":")); Serial.print(ACCEL_SAMPLE_MS * ACCEL_HIST_EVERY);
+  Serial.print(F(",\"range_g\":")); Serial.print(LIS_RANGE_G);
+  Serial.print(F(",\"rate_hz\":")); Serial.print(LIS_RATE_HZ);
+  Serial.print(F(",\"mg_per_count\":")); Serial.print(LIS_MG_PER_COUNT);
+  Serial.print(F(",\"overruns\":")); Serial.print(accOverruns);
+  Serial.print(F(",\"hist_ms\":")); Serial.print(1000L * ACCEL_BUCKET / LIS_RATE_HZ);
   Serial.print(F(",\"hist\":["));    // graph points this second, X/Y/Z in mg
   for (uint8_t i = 0; i < accHistN; i++) {
     if (i) Serial.print(',');
     Serial.print('['); Serial.print(accHist[i][0]); Serial.print(',');
     Serial.print(accHist[i][1]); Serial.print(','); Serial.print(accHist[i][2]); Serial.print(']');
+  }
+  Serial.print(F("],\"tilt_cg\":["));  // the same 100 ms windows averaged, in centi-g (100 = 1 g)
+  for (uint8_t i = 0; i < accHistN; i++) {
+    if (i) Serial.print(',');
+    Serial.print('['); Serial.print(accTilt[i][0]); Serial.print(',');
+    Serial.print(accTilt[i][1]); Serial.print(','); Serial.print(accTilt[i][2]); Serial.print(']');
   }
   Serial.print(F("],\"bringup\":{\"found\":")); printBool(abu.found);
   Serial.print(F(",\"who_ok\":"));   printBool(abu.whoOk);
@@ -789,7 +847,7 @@ void loop() {
   handleSerialCommands();
   sampleMic();                 // keep the microphone window filling between reports
   unsigned long now = millis();
-  accelTick(now);              // 50 accelerometer reads per second
+  accelTick(now);              // empty the accelerometer's FIFO (200 samples per second)
 
   if (now - lastRead >= READ_MS) {
     lastRead = now;

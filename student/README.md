@@ -67,7 +67,7 @@ The board checks itself at boot, in order:
 4. **Microphone:** AO bias near mid-supply. Then clap next to it; the loudness must jump.
 5. **Accelerometer (I2C):** bus scan finds it at 0x19 (or 0x18), WHO_AM_I reads `0x33`, the settings read back, and it reads about 1 g lying still. Then shake or tap it; the peak must go above 1.5 g.
 
-The accelerometer is read 50 times a second. Each one-second report carries 10 points for the graph plus the smallest and largest total acceleration in that second, so a quick tap still shows up.
+The accelerometer is set to +/-16 g (a bang on the table goes far past 2 g) and measures 200 times a second into its own 32-sample buffer (FIFO), which the Uno empties every 10 ms, so no sample is lost. Each one-second report carries 10 graph points, each the most extreme sample of its 100 ms, plus the smallest and largest total acceleration in that second, so a quick bang still shows up.
 
 If the temperature sensor or the accelerometer fails, the board retries every 3 seconds, so fixing a loose wire shows up live.
 
